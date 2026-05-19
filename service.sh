@@ -3,39 +3,99 @@
 MODDIR=${0%/*}
 LOG="$MODDIR/gpsu_art_guard.log"
 
-SKIP_CLEAR_MARKER="$MODDIR/skip_next_apex_session_clear"
-ART_ROLLBACK_MARKER="$MODDIR/art_rollback_pending"
+REBOOT_REQUIRED_MARKER="$MODDIR/reboot_required_after_art_remove"
+ART_REMOVED_MARKER="$MODDIR/updated_art_removed"
 ART_UPDATED_MARKER="$MODDIR/art_update_detected"
-REBOOT_REQUIRED_MARKER="$MODDIR/reboot_required_for_art_rollback"
+ART_UNSAFE_MARKER="$MODDIR/unsafe_art_path_detected"
+
+# 建立這個檔案可以暫時關閉 Force Remove：
+# touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
+DISABLE_FORCE_MARKER="$MODDIR/disable_force_remove"
+
+# 建立這個檔案可以在移除新版 ART 後自動重啟：
+# touch /data/adb/modules/DoNotARTUpdate/auto_reboot_after_remove
+AUTO_REBOOT_MARKER="$MODDIR/auto_reboot_after_remove"
 
 log() {
   echo "[service] $(date '+%F %T') $*" >> "$LOG"
 }
 
+rotate_log() {
+  if [ -f "$LOG" ]; then
+    size="$(stat -c %s "$LOG" 2>/dev/null)"
+    if [ -n "$size" ] && [ "$size" -gt 262144 ]; then
+      mv "$LOG" "$LOG.old" 2>/dev/null
+    fi
+  fi
+}
+
+update_description() {
+  desc="$1"
+  tmp="$MODDIR/module.prop.tmp"
+
+  [ -f "$MODDIR/module.prop" ] || return
+
+  grep -v '^description=' "$MODDIR/module.prop" > "$tmp" 2>/dev/null
+  echo "description=$desc" >> "$tmp"
+  mv "$tmp" "$MODDIR/module.prop" 2>/dev/null
+}
+
 wait_boot_completed() {
+  update_description "[等待] 等待系統開機完成後檢查 ART 狀態。"
+  log "[WAIT] Waiting for sys.boot_completed=1"
+
   until [ "$(getprop sys.boot_completed)" = "1" ]; do
     sleep 5
   done
 
-  # 等 PackageManager / RollbackManager 穩定
+  update_description "[檢查] 系統已開機，等待 PackageManager 穩定後檢查 ART。"
+
   sleep 30
+  log "[OK] Boot completed"
 }
 
-disable_gpsu_delivery() {
-  log "Disabling Google Play System Update metadata packages..."
+clear_apex_sessions_late() {
+  log "[清理] 再次清除 staged APEX sessions: /data/apex/sessions/*"
+  rm -rf /data/apex/sessions/* 2>/dev/null
+}
 
-  pm disable-user --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1
+ensure_modulemetadata_present() {
+  # 重要：
+  # 不要 disable / uninstall com.google.android.modulemetadata 主套件。
+  # 某些 ROM 在 system_server 啟動時會呼叫 getInstalledModules。
+  # 如果主套件被 user 0 uninstall，可能造成 system_server bootloop。
+  if ! pm list packages --user 0 2>/dev/null | grep -q "^package:com.google.android.modulemetadata$"; then
+    log "[修復] com.google.android.modulemetadata 在 user 0 不存在，嘗試 install-existing"
+    pm install-existing --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1
+  fi
+
+  pm enable --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1
+  log "[正常] 保持 com.google.android.modulemetadata 主套件啟用"
+}
+
+disable_gpsu_overlay_only() {
+  log "[GPSU] 僅停用 modulemetadata overlay"
+
+  # 只停用 overlay，不碰 com.google.android.modulemetadata 主套件。
   pm disable-user --user 0 com.google.android.overlay.modules.modulemetadata.forframework >> "$LOG" 2>&1
 
-  cmd package disable-user --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1
-  cmd package disable-user --user 0 com.google.android.overlay.modules.modulemetadata.forframework >> "$LOG" 2>&1
-
-  log "Disabled package check:"
+  log "[資訊] modulemetadata 套件狀態："
+  pm list packages --user 0 2>/dev/null | grep -i modulemetadata >> "$LOG" 2>&1
   pm list packages --user 0 -d 2>/dev/null | grep -i modulemetadata >> "$LOG" 2>&1
 }
 
 get_art_dumpsys() {
   dumpsys package com.google.android.art 2>/dev/null
+}
+
+has_google_art_apex() {
+  factory_ver="$(get_factory_art_version)"
+
+  if [ -n "$factory_ver" ]; then
+    return 0
+  fi
+
+  return 1
 }
 
 get_active_art_version() {
@@ -70,11 +130,11 @@ is_art_updated_version() {
   active_ver="$(get_active_art_version)"
   factory_ver="$(get_factory_art_version)"
 
-  log "Active ART versionCode: $active_ver"
-  log "Factory ART versionCode: $factory_ver"
+  log "[ART] Active versionCode=$active_ver"
+  log "[ART] Factory versionCode=$factory_ver"
 
   if [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then
-    log "Unable to parse ART versionCode. Treat as not updated."
+    log "[警告] 無法解析 ART versionCode"
     return 1
   fi
 
@@ -86,133 +146,141 @@ is_art_updated_version() {
 }
 
 log_art_status() {
-  log "===== ART APEX status ====="
+  log "[ART] ===== ART APEX 狀態 ====="
 
   active_path="$(get_active_art_path)"
   factory_path="$(get_factory_art_path)"
   active_ver="$(get_active_art_version)"
   factory_ver="$(get_factory_art_version)"
 
-  log "Active ART path: $active_path"
-  log "Factory ART path: $factory_path"
-  log "Active ART versionCode: $active_ver"
-  log "Factory ART versionCode: $factory_ver"
+  log "[ART] Active path=$active_path"
+  log "[ART] Factory path=$factory_path"
+  log "[ART] Active versionCode=$active_ver"
+  log "[ART] Factory versionCode=$factory_ver"
 
   get_art_dumpsys \
     | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir' \
     >> "$LOG" 2>&1
 
+  log "[ART] ===== ART APEX 狀態結束 ====="
+}
+
+cleanup_markers_if_art_ok() {
+  active_ver="$(get_active_art_version)"
+  factory_ver="$(get_factory_art_version)"
+
+  if [ -z "$active_ver" ] && [ -n "$factory_ver" ]; then
+    log "[重啟] Active ART 為空，但 Factory ART 存在。保留重啟提示。"
+    touch "$REBOOT_REQUIRED_MARKER"
+    update_description "[重啟] 新版 ART 已移除，請再重開機套用。Factory=$factory_ver。"
+    return
+  fi
+
   if is_art_updated_version; then
-    log "WARNING: Active ART version is newer than factory ART."
     touch "$ART_UPDATED_MARKER"
+    return
+  fi
+
+  rm -f "$ART_UPDATED_MARKER"
+  rm -f "$REBOOT_REQUIRED_MARKER"
+  rm -f "$ART_UNSAFE_MARKER"
+
+  if [ -n "$active_ver" ] && [ -n "$factory_ver" ]; then
+    update_description "[正常] ART 已是內建等效版本。Active=$active_ver Factory=$factory_ver。"
   else
-    log "ART version is factory-equivalent or not newer. Treat as safe."
-    rm -f "$ART_UPDATED_MARKER"
+    update_description "[正常] 未偵測到新版 ART，或此裝置無 Google ART APEX。"
+  fi
+}
+
+force_remove_updated_art_apex() {
+  if [ -f "$DISABLE_FORCE_MARKER" ]; then
+    log "[略過] disable_force_remove marker 存在，Force Remove 已停用"
+    update_description "[略過] Force Remove 已停用，只監控 ART 狀態。"
+    return
   fi
 
-  log "===== ART APEX status end ====="
-}
-
-has_available_art_rollback() {
-  rollback_info="$(dumpsys rollback 2>/dev/null | sed -n '/Available rollbacks:/,/Historical rollbacks:/p')"
-
-  echo "$rollback_info" | grep -q -- "-state: available"
-  has_available=$?
-
-  echo "$rollback_info" | grep -q "com.google.android.art .*->"
-  has_art=$?
-
-  if [ "$has_available" -eq 0 ] && [ "$has_art" -eq 0 ]; then
-    return 0
+  if ! has_google_art_apex; then
+    log "[略過] 未找到可解析的 Google ART Factory 版本。Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
+    update_description "[略過] 未找到可解析的 Google ART Factory 版本。Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
+    return
   fi
 
-  return 1
-}
-
-log_rollback_status() {
-  log "===== Rollback status ====="
-
-  dumpsys rollback 2>/dev/null \
-    | grep -iE 'Available rollbacks|Historical rollbacks|state:|isStaged|committed|com.google.android.art|com.android.art' \
-    >> "$LOG" 2>&1
-
-  log "===== Rollback status end ====="
-}
-
-rollback_art_if_available() {
-  log "===== Checking ART rollback availability ====="
-
-  if [ -f "$ART_ROLLBACK_MARKER" ]; then
-    log "ART rollback already requested. Do not request again."
+  active_ver="$(get_active_art_version)"
+  factory_ver="$(get_factory_art_version)"
+  active_path="$(get_active_art_path)"
+  
+  if [ -z "$active_ver" ] && [ -n "$factory_ver" ]; then
+    log "[重啟] Active ART 為空，但 Factory ART 存在。可能已移除新版 ART，等待重開機重建 active ART。"
+    touch "$REBOOT_REQUIRED_MARKER"
+    update_description "[重啟] 新版 ART 已移除，請再重開機套用。Factory=$factory_ver。"
     return
   fi
 
   if ! is_art_updated_version; then
-    log "Active ART is not newer than factory. Rollback not needed."
+    log "[正常] Active ART 不高於 Factory ART，不需要移除"
+    cleanup_markers_if_art_ok
     return
   fi
 
-  if has_available_art_rollback; then
-    log "Available ART rollback found. Running pm rollback-app com.google.android.art..."
+  log "[警告] 偵測到新版 ART"
+  log "[ART] Active path=$active_path"
+  log "[ART] Active versionCode=$active_ver"
+  log "[ART] Factory versionCode=$factory_ver"
 
-    # 先建立 marker，避免下一次開機 post-fs-data.sh 清掉 rollback staged session
-    touch "$SKIP_CLEAR_MARKER"
-
-    OUT="$(pm rollback-app com.google.android.art 2>&1)"
-    echo "$OUT" >> "$LOG"
-
-    echo "$OUT" | grep -qi "Success"
-    if [ $? -eq 0 ]; then
-      log "ART rollback requested successfully. Reboot is required."
-      touch "$ART_ROLLBACK_MARKER"
-      touch "$REBOOT_REQUIRED_MARKER"
-    else
-      log "ART rollback command did not report success."
-      rm -f "$SKIP_CLEAR_MARKER"
-    fi
-  else
-    log "No available ART rollback found."
-  fi
-
-  log "===== ART rollback check end ====="
-}
-
-cleanup_rollback_markers_if_done() {
-  if [ ! -f "$ART_ROLLBACK_MARKER" ] && [ ! -f "$SKIP_CLEAR_MARKER" ]; then
+  if [ -z "$active_path" ] || [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then
+    log "[錯誤] 無法解析 ART path/version，停止 Force Remove"
+    update_description "[錯誤] 偵測到新版 ART，但無法解析路徑或版本，已停止移除。"
     return
   fi
 
-  log "Rollback marker exists. Checking whether ART rollback has been applied..."
+  case "$active_path" in
+    /data/apex/active/com.android.art@*.apex|/data/apex/active/com.google.android.art@*.apex)
+      log "[移除] 移除新版 ART APEX: $active_path"
 
-  if is_art_updated_version; then
-    log "ART is still newer than factory. Keep rollback markers."
-  else
-    log "ART is no longer newer than factory. Remove rollback markers."
-    rm -f "$ART_ROLLBACK_MARKER"
-    rm -f "$SKIP_CLEAR_MARKER"
-    rm -f "$REBOOT_REQUIRED_MARKER"
-  fi
+      rm -rf "$active_path" >> "$LOG" 2>&1
+      rc=$?
+
+      sync
+
+      if [ "$rc" -eq 0 ]; then
+        log "[重啟] 已移除新版 ART APEX，需要重開機套用"
+
+        touch "$ART_REMOVED_MARKER"
+        touch "$REBOOT_REQUIRED_MARKER"
+        rm -f "$ART_UNSAFE_MARKER"
+
+        update_description "[重啟] 已移除新版 ART，請重開機套用。Active=$active_ver Factory=$factory_ver。"
+
+        if [ -f "$AUTO_REBOOT_MARKER" ]; then
+          log "[重啟] 偵測到 auto_reboot_after_remove marker，10 秒後自動重啟"
+          update_description "[重啟] 已移除新版 ART，10 秒後自動重啟。"
+          sleep 10
+          reboot
+        fi
+      else
+        log "[錯誤] 移除新版 ART APEX 失敗，rc=$rc"
+        update_description "[錯誤] 偵測到新版 ART，但移除失敗。Active=$active_ver Factory=$factory_ver。"
+      fi
+      ;;
+    *)
+      log "[錯誤] ART 路徑不安全，停止移除: $active_path"
+
+      touch "$ART_UNSAFE_MARKER"
+      update_description "[錯誤] ART 路徑不安全，已停止移除。"
+      ;;
+  esac
 }
 
-clear_apex_sessions_safe() {
-  if [ -f "$ART_ROLLBACK_MARKER" ] || [ -f "$SKIP_CLEAR_MARKER" ]; then
-    log "Rollback/skip marker exists. Skip clearing /data/apex/sessions."
-    return
-  fi
+log "[開始] service.sh started"
 
-  log "Clearing staged APEX sessions late..."
-  rm -rf /data/apex/sessions/* 2>/dev/null
-}
-
-log "service.sh started"
-
+rotate_log
 wait_boot_completed
 
-disable_gpsu_delivery
-cleanup_rollback_markers_if_done
-clear_apex_sessions_safe
-log_art_status
-log_rollback_status
-rollback_art_if_available
+ensure_modulemetadata_present
+disable_gpsu_overlay_only
+clear_apex_sessions_late
 
-log "service.sh finished"
+log_art_status
+force_remove_updated_art_apex
+
+log "[完成] service.sh finished"
