@@ -1,6 +1,6 @@
 id=DoNotARTUpdate
 name=Do Not ART Update
-version=v1.0
-versionCode=10
+version=v2.1.0
+versionCode=210
 author=lokey0905
-description=Disable Google Play System Update delivery, clear staged APEX sessions, and rollback updated ART APEX when rollback is available.
+description=[INIT] Force Remove enabled. Waiting for ART status check.
