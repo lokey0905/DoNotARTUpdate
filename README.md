@@ -2,7 +2,26 @@
 
 基於 [`dyrok/disable-gpsu-bootloops`](https://github.com/dyrok/disable-gpsu-bootloops) 修改的 Magisk / KernelSU / APatch 模組，用於降低 Google Play System Update（GPSU / Mainline APEX）自動更新 ART 導致 hook、Zygisk、Frida、runtime patch 失效的風險。
 
-> ⚠️ 本模組屬於進階系統修改工具。請先確認你了解 APEX、ART、Rollback、Magisk 模組開機流程。錯誤操作可能造成 bootloop。
+> ⚠️ 本模組屬於進階系統修改工具。請先確認你了解 APEX、ART、Magisk / KernelSU / APatch 模組開機流程。錯誤操作可能造成 bootloop。使用前建議備份資料，並確保具備 recovery / fastboot / factory image 救援能力。
+
+---
+
+## 目前設計重點
+
+本模組已改為 **Force Remove 模式**，不再依賴 `pm rollback-app`。
+
+核心策略：
+
+```text
+1. 開機早期清除 staged APEX sessions
+2. 開機早期移除 /data/apex/active 內的 updated ART APEX
+3. 不碰 com.google.android.modulemetadata 主套件
+4. 只嘗試停用 modulemetadata overlay
+5. 不使用 rollback-app
+6. 不使用 uninstall-system-updates
+7. 不直接刪 /system/apex
+8. 不刪 /data/apex/decompressed
+```
 
 ---
 
@@ -10,37 +29,65 @@
 
 本模組主要做以下幾件事：
 
-1. 停用 Google Play System Update 的 metadata package：
-   - `com.google.android.modulemetadata`
-   - `com.google.android.overlay.modules.modulemetadata.forframework`
-
-2. 清除尚未套用的 staged APEX sessions：
+1. **清除尚未套用的 staged APEX sessions**
 
    ```text
    /data/apex/sessions/*
    ```
 
-3. 偵測目前 ART 狀態：
+2. **開機早期移除 updated ART active APEX**
+
+   僅允許移除：
+
+   ```text
+   /data/apex/active/com.android.art@*.apex
+   /data/apex/active/com.google.android.art@*.apex
+   ```
+
+3. **偵測目前 ART 狀態**
+
    - Active ART versionCode
    - Factory ART versionCode
    - Active ART path
    - Factory ART path
 
-4. 如果偵測到：
+4. **支援 Google ART compressed / decompressed 狀態**
+
+   例如三星裝置可能出現：
 
    ```text
-   Active ART versionCode > Factory ART versionCode
+   /system/apex/com.google.android.art_compressed.apex
+   /data/apex/decompressed/com.android.art@331813010.decompressed.apex
    ```
 
-   且系統存在可用 rollback，則執行：
+5. **僅停用 Google Play System Update 的 overlay metadata**
 
-   ```sh
-   pm rollback-app com.google.android.art
+   ```text
+   com.google.android.overlay.modules.modulemetadata.forframework
    ```
 
-5. 在 ART rollback pending 時，避免清除 `/data/apex/sessions/*`，防止 staged rollback 被誤刪。
+6. **保留並啟用主 metadata package**
 
-6. 寫入 log，方便追蹤模組執行狀態。
+   ```text
+   com.google.android.modulemetadata
+   ```
+
+   這個主套件不要停用或 uninstall，否則部分 ROM 可能造成 `system_server` bootloop。
+
+7. **提供安裝時與 action.sh 即時 ART 檢查**
+
+   - `customize.sh`：安裝時檢查 ART 狀態
+   - `action.sh`：在 Magisk / KernelSU / APatch 的動作按鈕或手動執行時檢查 ART 狀態
+
+8. **以中文 `[狀態]` 格式更新 module.prop description**
+
+   例如：
+
+   ```text
+   [正常] ART 已是內建等效版本。Active=331813010 Factory=331813010。
+   [重啟] 已移除新版 ART，請重開機套用。Active=361501120 Factory=331813010。
+   [略過] 未找到 Google ART APEX。Android 11 或更舊版本通常不需要處理 ART 遠端更新。
+   ```
 
 ---
 
@@ -49,15 +96,51 @@
 本模組**不會**做以下操作：
 
 - 不停用 Play Store 的 Google Play 系統更新 UI。
+- 不停用 `com.google.android.modulemetadata` 主套件。
+- 不 uninstall `com.google.android.modulemetadata` 主套件。
+- 不使用 `pm rollback-app`。
 - 不使用 `pm uninstall-system-updates`。
-- 不直接刪除 `/data/apex/active`。
-- 不直接刪除 `/system/apex`。
-- 不自動重開機。
-- 不保證所有 Android 版本與 ROM 都能成功阻止或回退 ART 更新。
+- 不刪除 `/system/apex/*`。
+- 不刪除 `/apex/*`。
+- 不刪除 `/data/apex/decompressed/*`。
+- 預設不自動重開機。
+- 不保證所有 Android 版本與 ROM 都能 100% 阻止或回退 ART 更新。
 
 ---
 
-## 為什麼不使用 `uninstall-system-updates`？
+## 為什麼不再使用 rollback-app？
+
+早期版本曾嘗試使用：
+
+```sh
+pm rollback-app com.google.android.art
+```
+
+但實測部分裝置可能出現：
+
+```text
+APEX activation failed.
+Reason: Session reverted due to crashing native process: zygote
+```
+
+這代表 ART rollback 嘗試套用時可能導致 zygote crash，系統又自動 revert 回新版 ART。
+
+因此新版模組改用更直接的方式：
+
+```text
+直接移除 /data/apex/active 裡的 updated ART APEX
+```
+
+但為了降低風險，模組只允許移除明確符合以下白名單的路徑：
+
+```text
+/data/apex/active/com.android.art@*.apex
+/data/apex/active/com.google.android.art@*.apex
+```
+
+---
+
+## 為什麼不使用 uninstall-system-updates？
 
 部分 Android 版本 / ROM 對 ART APEX 執行以下指令時會出現 PackageManager 例外：
 
@@ -77,13 +160,31 @@ Attempt to invoke virtual method
 on a null object reference
 ```
 
-因此本模組改用 Android 官方 rollback 流程：
+因此本模組不使用 `uninstall-system-updates`。
+
+---
+
+## 為什麼不能 uninstall com.google.android.modulemetadata？
+
+實測部分 ROM 若執行：
 
 ```sh
-pm rollback-app com.google.android.art
+pm uninstall -k --user 0 com.google.android.modulemetadata
 ```
 
-前提是系統保留了 available rollback。
+可能造成 `system_server` 開機階段崩潰，錯誤類似：
+
+```text
+java.lang.IllegalStateException:
+Call to getInstalledModules before metadata loaded
+```
+
+因此新版模組只做：
+
+```text
+保持 com.google.android.modulemetadata 主套件存在並啟用
+只嘗試停用 com.google.android.overlay.modules.modulemetadata.forframework
+```
 
 ---
 
@@ -91,11 +192,14 @@ pm rollback-app com.google.android.art
 
 | 狀況 | 結果 |
 |---|---|
-| 尚未更新 ART | 停用 metadata，清除 staged APEX sessions，降低後續自動更新風險 |
-| 已下載但尚未重開套用的 APEX 更新 | 清除 `/data/apex/sessions/*`，阻止 staged update 套用 |
-| ART 已更新，且存在 available rollback | 自動執行 `pm rollback-app com.google.android.art`，等待手動重開 |
-| ART 已更新，但沒有 available rollback | 只記錄警告，不強制刪除 active APEX |
-| Play Store GPSU UI 仍可打開 | 正常，本模組不處理 UI，只處理實際套用流程 |
+| 尚未更新 ART | 記錄 ART 狀態，不移除 |
+| 已下載但尚未重開套用的 APEX 更新 | 清除 `/data/apex/sessions/*` |
+| ART 已更新到 `/data/apex/active/com.android.art@*.apex` | 開機早期移除 updated ART APEX |
+| 移除 updated ART 後 | description 顯示需要重開機 |
+| 三星 compressed ART | 支援 `com.google.android.art_compressed.apex` |
+| 三星 decompressed ART | 視為 factory-equivalent，不刪除 |
+| Android 11 或更舊 | 若無 Google ART APEX，略過 ART 處理 |
+| Play Store GPSU UI 仍可打開 | 正常，本模組不處理 UI，只處理 staged / active APEX |
 
 ---
 
@@ -104,51 +208,135 @@ pm rollback-app com.google.android.art
 | 路徑 | 說明 | 本模組是否處理 |
 |---|---|---|
 | `/system/apex` | ROM 內建 Factory APEX | 不刪除 |
-| `/data/apex/sessions` | 已下載、等待下次重開套用的 staged APEX session | 會清除，但 rollback pending 時跳過 |
-| `/data/apex/active` | 目前 active 的 APEX 更新版或 active copy | 不刪除 |
+| `/data/apex/sessions` | 已下載、等待下次重開套用的 staged APEX session | 會清除 |
+| `/data/apex/active/com.android.art@*.apex` | Google Play 更新後的 active ART APEX | 會移除 |
+| `/data/apex/active/com.google.android.art@*.apex` | Google Play 更新後的 active ART APEX | 會移除 |
+| `/data/apex/decompressed` | compressed APEX 解壓後的 factory-equivalent ART | 不刪除 |
 | `/apex` | 系統執行中掛載的 APEX | 不刪除 |
 
 ---
 
-## 為什麼 `/data/apex/active` 不一定代表已更新？
+## com.android.runtime 與 com.google.android.art 的差異
 
-rollback 後可能出現這種狀態：
-
-```text
-Active APEX packages:
-    Path: /data/apex/active/com.android.art@331314010.apex
-      versionCode=331314010
-
-Factory APEX packages:
-    Path: /system/apex/com.google.android.art.apex
-      versionCode=331314010
-```
-
-雖然 Active path 仍在 `/data/apex/active`，但版本已經等於 Factory：
+兩者不一樣。
 
 ```text
-Active versionCode == Factory versionCode
+com.android.runtime ≠ com.google.android.art
 ```
 
-這種狀態視為 **factory-equivalent / safe**。
+### com.android.runtime
 
-因此本模組不以路徑判斷是否已更新，而是以版本判斷：
+常見於 Android 10 / 11，也可能存在於 Android 12+。
+
+範例：
+
+```text
+/system/apex/com.android.runtime.apex
+```
+
+這是 Runtime 基礎環境相關 APEX，不是本模組主要處理的 Google Play ART 更新目標。
+
+### com.google.android.art
+
+這才是本模組主要處理的 ART Mainline / Google Play System Update 目標。
+
+常見 updated ART：
+
+```text
+/data/apex/active/com.android.art@361501120.apex
+```
+
+常見 factory ART：
+
+```text
+/system/apex/com.google.android.art.apex
+/system/apex/com.google.android.art_compressed.apex
+/data/apex/decompressed/com.android.art@331813010.decompressed.apex
+```
+
+本模組主要判斷：
+
+```text
+com.google.android.art
+```
+
+不要用 `com.android.runtime` 作為是否需要移除 ART 更新的主要依據。
+
+---
+
+## 判斷 ART 是否已更新
+
+核心判斷邏輯：
 
 ```text
 Active ART versionCode > Factory ART versionCode
 ```
 
-只有 Active 版本高於 Factory 版本時，才視為 ART 已被更新。
+代表 ART 已被 Google Play System Update 更新。
+
+安全狀態：
+
+```text
+Active ART versionCode == Factory ART versionCode
+```
+
+代表 ART 已是 factory-equivalent。
+
+---
+
+## 三星 compressed / decompressed ART 說明
+
+部分三星裝置 Factory ART 可能顯示為：
+
+```text
+/system/apex/com.google.android.art_compressed.apex
+```
+
+移除新版 ART 並重新開機後，可能變成：
+
+```text
+/data/apex/decompressed/com.android.art@331813010.decompressed.apex
+```
+
+這是正常狀態。
+
+例如：
+
+```text
+Active APEX packages:
+    Path: /data/apex/decompressed/com.android.art@331813010.decompressed.apex
+      versionCode=331813010
+
+Factory APEX packages:
+    Path: /data/apex/decompressed/com.android.art@331813010.decompressed.apex
+      versionCode=331813010
+```
+
+這代表：
+
+```text
+Active versionCode == Factory versionCode
+```
+
+屬於正常 / safe / factory-equivalent 狀態。
+
+不要刪除：
+
+```text
+/data/apex/decompressed/*
+```
 
 ---
 
 ## 模組結構
 
 ```text
-disable-gpsu-art-guard/
+DoNotARTUpdate/
 ├── module.prop
+├── customize.sh
 ├── post-fs-data.sh
 ├── service.sh
+├── action.sh
 └── uninstall.sh
 ```
 
@@ -160,49 +348,37 @@ disable-gpsu-art-guard/
 flowchart TD
     A["開機"] --> B["post-fs-data.sh"]
 
-    B --> C{"是否存在 rollback / skip marker？"}
+    B --> C["更新 description：[啟動]"]
+    C --> D["清除 /data/apex/sessions/*"]
+    D --> E{"是否存在 /data/apex/active/com.*.art@*.apex？"}
 
-    C -->|是| D["跳過清除 /data/apex/sessions"]
-    C -->|否| E["清除 /data/apex/sessions/*"]
+    E -->|否| F["不移除 ART"]
+    E -->|是| G{"路徑是否符合白名單？"}
 
-    D --> F["系統繼續開機"]
-    E --> F
+    G -->|否| H["停止移除並記錄錯誤"]
+    G -->|是| I["早期移除 updated ART APEX"]
+    I --> J["建立 reboot_required marker"]
+    J --> K["更新 description：[重啟]"]
 
-    F --> G["service.sh"]
-    G --> H["等待 sys.boot_completed=1"]
-    H --> I["再等待 PackageManager / RollbackManager 穩定"]
+    F --> L["系統繼續開機"]
+    H --> L
+    K --> L
 
-    I --> J["停用 modulemetadata packages"]
+    L --> M["service.sh"]
+    M --> N["等待 sys.boot_completed=1"]
+    N --> O["等待 PackageManager 穩定"]
+    O --> P["保持 com.google.android.modulemetadata 主套件啟用"]
+    P --> Q["嘗試停用 modulemetadata overlay"]
+    Q --> R["再次清除 staged APEX sessions"]
+    R --> S["記錄 ART 狀態"]
+    S --> T{"Active ART > Factory ART？"}
 
-    J --> K{"是否有 rollback marker？"}
-    K -->|有| L{"Active ART versionCode > Factory？"}
-    K -->|無| M["安全清除 staged APEX sessions"]
+    T -->|否| U["description：[正常] ART 已是內建等效版本"]
+    T -->|是| V["Force Remove updated ART APEX"]
+    V --> W["description：[重啟] 請重開機套用"]
 
-    L -->|否| N["rollback 已完成，移除 markers"]
-    L -->|是| O["保留 markers，避免誤刪 rollback session"]
-
-    N --> M
-    O --> P["記錄 ART 狀態"]
-
-    M --> P
-
-    P --> Q{"Active ART versionCode > Factory？"}
-
-    Q -->|否| R["ART 未更新或已回退，不處理"]
-    Q -->|是| S{"dumpsys rollback 有 available ART rollback？"}
-
-    S -->|否| T["只記錄警告，不硬刪 active APEX"]
-    S -->|是| U["建立 skip marker"]
-    U --> V["pm rollback-app com.google.android.art"]
-
-    V --> W{"是否 Success？"}
-    W -->|是| X["建立 art_rollback_pending / reboot_required marker"]
-    W -->|否| Y["移除 skip marker，記錄失敗"]
-
-    R --> Z["結束"]
-    T --> Z
-    X --> Z
-    Y --> Z
+    U --> X["結束"]
+    W --> X
 ```
 
 ---
@@ -218,60 +394,46 @@ flowchart TD
 假設模組目錄為：
 
 ```text
-/data/adb/modules/disable-gpsu-art-guard
+/data/adb/modules/DoNotARTUpdate
 ```
 
 修正權限：
 
 ```sh
-chmod 755 /data/adb/modules/disable-gpsu-art-guard/post-fs-data.sh
-chmod 755 /data/adb/modules/disable-gpsu-art-guard/service.sh
-chmod 755 /data/adb/modules/disable-gpsu-art-guard/uninstall.sh
-chmod 644 /data/adb/modules/disable-gpsu-art-guard/module.prop
+chmod 755 /data/adb/modules/DoNotARTUpdate/customize.sh
+chmod 755 /data/adb/modules/DoNotARTUpdate/post-fs-data.sh
+chmod 755 /data/adb/modules/DoNotARTUpdate/service.sh
+chmod 755 /data/adb/modules/DoNotARTUpdate/action.sh
+chmod 755 /data/adb/modules/DoNotARTUpdate/uninstall.sh
+chmod 644 /data/adb/modules/DoNotARTUpdate/module.prop
 ```
 
 如果之前建立過停用標記，請移除：
 
 ```sh
-rm -f /data/adb/modules/disable-gpsu-art-guard/disable
+rm -f /data/adb/modules/DoNotARTUpdate/disable
 ```
 
 ---
 
 ## 驗證指令
 
-### 1. 確認 modulemetadata 是否停用
+### 1. 確認 ART Active / Factory 版本
 
 ```sh
-pm list packages --user 0 -d | grep modulemetadata
+dumpsys package com.google.android.art   | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
 ```
 
-預期看到：
-
-```text
-package:com.google.android.modulemetadata
-package:com.google.android.overlay.modules.modulemetadata.forframework
-```
-
----
-
-### 2. 確認 ART Active / Factory 版本
-
-```sh
-dumpsys package com.google.android.art \
-  | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
-```
-
-安全狀態範例：
+成功狀態範例：
 
 ```text
 Active APEX packages:
-    Path: /data/apex/active/com.android.art@331314010.apex
-      versionCode=331314010
+    Path: /data/apex/decompressed/com.android.art@331813010.decompressed.apex
+      versionCode=331813010
 
 Factory APEX packages:
-    Path: /system/apex/com.google.android.art.apex
-      versionCode=331314010
+    Path: /data/apex/decompressed/com.android.art@331813010.decompressed.apex
+      versionCode=331813010
 ```
 
 重點：
@@ -282,35 +444,89 @@ Active versionCode == Factory versionCode
 
 ---
 
-### 3. 確認是否有可用 rollback
+### 2. 確認 runtime 狀態
 
 ```sh
-dumpsys rollback | grep -iE 'art|rollback|staged|committed|available'
+dumpsys package com.android.runtime   | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
 ```
 
-如果看到類似：
+這只是輔助確認，不是本模組主要判斷依據。
 
-```text
--state: available
--isStaged: true
-com.google.android.art 361501120 -> 331314010
-```
+---
 
-代表可以透過：
+### 3. 確認 staged sessions
 
 ```sh
-pm rollback-app com.google.android.art
+cmd package list staged-sessions
 ```
 
-回退 ART。
+只看 ART：
+
+```sh
+cmd package list staged-sessions | grep -i art
+```
 
 ---
 
 ### 4. 查看模組 log
 
 ```sh
-cat /data/adb/modules/disable-gpsu-art-guard/gpsu_art_guard.log
+cat /data/adb/modules/DoNotARTUpdate/gpsu_art_guard.log
 ```
+
+或從電腦拉出：
+
+```sh
+adb exec-out su -c "cat /data/adb/modules/DoNotARTUpdate/gpsu_art_guard.log" > gpsu_art_guard.log
+```
+
+---
+
+### 5. 執行 action.sh 即時檢查
+
+```sh
+sh /data/adb/modules/DoNotARTUpdate/action.sh
+```
+
+或：
+
+```sh
+adb shell su -c "sh /data/adb/modules/DoNotARTUpdate/action.sh"
+```
+
+---
+
+## Android 11 檢查 ART 指令
+
+Android 11 通常沒有 Android 12+ 的 Google ART Mainline 更新機制，但可能有：
+
+```text
+com.android.runtime
+com.android.art.release
+```
+
+檢查指令：
+
+```sh
+getprop ro.build.version.release
+getprop ro.build.version.sdk
+pm list packages --apex-only -f | grep -iE 'art|runtime'
+dumpsys package com.google.android.art | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
+dumpsys package com.android.runtime | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
+dumpsys package com.android.art | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
+ls -l /system/apex | grep -iE 'art|runtime'
+ls -l /data/apex/active 2>/dev/null | grep -iE 'art|runtime'
+ls -l /apex | grep -iE 'art|runtime'
+```
+
+Android 11 常見：
+
+```text
+/system/apex/com.android.runtime.apex
+/system/apex/com.android.art.release.apex
+```
+
+且 `com.google.android.art` 為空，這通常是正常狀態。
 
 ---
 
@@ -318,10 +534,47 @@ cat /data/adb/modules/disable-gpsu-art-guard/gpsu_art_guard.log
 
 | 檔案 | 說明 |
 |---|---|
-| `skip_next_apex_session_clear` | 下次開機跳過清除 `/data/apex/sessions/*` |
-| `art_rollback_pending` | ART rollback 已成功排程，等待重開機套用 |
+| `reboot_required_after_art_remove` | 已移除新版 ART，需要重開機套用 |
+| `updated_art_removed` | service 階段已移除 updated ART |
+| `updated_art_removed_early` | post-fs-data 階段已移除 updated ART |
 | `art_update_detected` | 偵測到 Active ART 版本高於 Factory |
-| `reboot_required_for_art_rollback` | ART rollback 已排程，需要手動重開機 |
+| `unsafe_art_path_detected` | 偵測到不安全 ART 路徑，已拒絕移除 |
+| `disable_force_remove` | 停用 Force Remove，只監控 ART |
+| `auto_reboot_after_remove` | 移除新版 ART 後自動重啟 |
+
+---
+
+## 自動重啟
+
+預設不自動重啟。
+
+如果需要在移除 updated ART 後自動重啟，建立：
+
+```sh
+touch /data/adb/modules/DoNotARTUpdate/auto_reboot_after_remove
+```
+
+關閉自動重啟：
+
+```sh
+rm -f /data/adb/modules/DoNotARTUpdate/auto_reboot_after_remove
+```
+
+---
+
+## 關閉 Force Remove
+
+如果只想監控 ART，不想自動移除 updated ART：
+
+```sh
+touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
+```
+
+恢復 Force Remove：
+
+```sh
+rm -f /data/adb/modules/DoNotARTUpdate/disable_force_remove
+```
 
 ---
 
@@ -331,45 +584,61 @@ cat /data/adb/modules/disable-gpsu-art-guard/gpsu_art_guard.log
 
 正常。
 
-本模組不處理 Play Store UI，只處理 metadata package、staged APEX sessions 與 ART rollback。
+本模組不處理 Play Store UI，只處理 staged APEX sessions 與 updated ART active APEX。
 
-UI 能打開不代表 ART 一定會成功更新。
+UI 能打開不代表 ART 一定會成功保留更新。
 
 ---
 
-### 2. `/data/apex/active` 還有 ART，是不是代表更新沒回退？
+### 2. `/data/apex/decompressed` 裡有 ART，是不是更新版？
 
 不一定。
 
-請比較 versionCode：
+三星 compressed ART 回到 Factory 等效狀態時，可能會顯示：
 
 ```text
-Active ART versionCode
-Factory ART versionCode
+/data/apex/decompressed/com.android.art@331813010.decompressed.apex
 ```
 
-如果兩者相同，視為已回到 factory-equivalent 狀態。
+只要：
+
+```text
+Active versionCode == Factory versionCode
+```
+
+就是正常狀態。
 
 ---
 
-### 3. 沒有 available rollback 怎麼辦？
+### 3. Active APEX packages 是空的，正常嗎？
 
-本模組不會硬刪 `/data/apex/active`。
+如果剛移除 updated ART 後，可能短暫看到：
 
-如果沒有 rollback 記錄，常見選項只有：
+```text
+Active APEX packages:
+Inactive APEX packages:
+    Path: /system/apex/com.google.android.art_compressed.apex
+Factory APEX packages:
+    Path: /system/apex/com.google.android.art_compressed.apex
+```
 
-- 保持目前版本
-- Factory reset
-- 重新刷完整 ROM / factory image
-- 使用其他高風險手動方式，不建議寫進模組
+這時通常需要再重開一次，讓系統重新建立 decompressed ART active 狀態。
 
 ---
 
-### 4. 為什麼不直接刪 `/data/apex/active`？
+### 4. 為什麼不直接刪 `/data/apex/decompressed`？
 
-因為 `/data/apex/active` 可能包含目前系統正在使用的 active APEX。
+因為 `/data/apex/decompressed` 可能是 compressed factory ART 解壓後的正常運作版本。
 
-直接刪除 ART active APEX 有機率造成 bootloop。
+刪除它可能造成 bootloop。
+
+---
+
+### 5. 為什麼不使用 rollback？
+
+部分設備 rollback ART 可能造成 zygote crash，導致 staged rollback 失敗並被系統 revert。
+
+因此新版模組不再使用 rollback。
 
 ---
 
@@ -379,14 +648,18 @@ Factory ART versionCode
 
 ```text
 可以清 /data/apex/sessions
-可以停用 modulemetadata
-可以使用 pm rollback-app
+可以移除 /data/apex/active/com.*.art@*.apex
 可以記錄 ART 狀態
+可以更新 description 顯示狀態
+可以停用 modulemetadata overlay
 
-不刪 /data/apex/active
+不刪 /data/apex/decompressed
 不刪 /system/apex
+不刪 /apex
+不使用 rollback-app
 不使用 uninstall-system-updates
-不自動 reboot
+不 uninstall com.google.android.modulemetadata
+不預設自動 reboot
 不停用 Play Store UI
 ```
 
@@ -394,9 +667,9 @@ Factory ART versionCode
 
 ## 免責聲明
 
-本模組無法保證所有裝置、所有 ROM、所有 Android 版本都能成功阻止 Google Play System Update 或回退 ART。
+本模組無法保證所有裝置、所有 ROM、所有 Android 版本都能成功阻止 Google Play System Update 或移除 updated ART。
 
-Google Play System Update、APEX、RollbackManager 的行為可能因 Android 版本、OEM ROM、Google Play services / Play Store 版本而異。
+Google Play System Update、APEX、apexd、PackageManager 的行為可能因 Android 版本、OEM ROM、Google Play services / Play Store 版本而異。
 
 使用前請自行備份資料，並確保具備 recovery / fastboot / factory image 救援能力。
 
