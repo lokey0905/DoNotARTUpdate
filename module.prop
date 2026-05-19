@@ -1,0 +1,6 @@
+id=donnotARTUpdate
+name=Donnot ART Update
+version=v1.0
+versionCode=10
+author=lokey0905
+description=Disable Google Play System Update delivery, clear staged APEX sessions, and rollback updated ART APEX when rollback is available.
