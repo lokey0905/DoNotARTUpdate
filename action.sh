@@ -35,14 +35,18 @@ has_google_art_apex() {
 get_active_art_version() {
   get_art_dumpsys \
     | sed -n '/Active APEX packages:/,/Inactive APEX packages:/p' \
-    | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' \
+    | sed -n \
+        -e 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' \
+        -e 's/^[[:space:]]*Version: \([0-9][0-9]*\).*/\1/p' \
     | head -n 1
 }
 
 get_factory_art_version() {
   get_art_dumpsys \
     | sed -n '/Factory APEX packages:/,$p' \
-    | sed -n 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' \
+    | sed -n \
+        -e 's/.*versionCode=\([0-9][0-9]*\).*/\1/p' \
+        -e 's/^[[:space:]]*Version: \([0-9][0-9]*\).*/\1/p' \
     | head -n 1
 }
 
@@ -94,7 +98,7 @@ check_art_now() {
   print_line "[ART] Factory versionCode=$factory_ver"
 
   get_art_dumpsys \
-    | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir' \
+    | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|Version:|versionCode|IsActive|IsFactory|sourceDir' \
     >> "$LOG" 2>&1
 
   if [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then

@@ -21,7 +21,7 @@
 
 ## 功能
 
-- 安裝時與開機後檢查 ART Active / Factory versionCode
+- 安裝時與開機後檢查 ART Active / Factory 版本
 - 偵測並移除 Google Play 更新後的 ART APEX
 - 支援三星 compressed / decompressed ART 狀態
 - 透過 `module.prop` description 顯示狀態，例如：
@@ -49,13 +49,13 @@
 查看 ART Active / Factory 狀態：
 
 ```sh
-dumpsys package com.google.android.art | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|versionCode|sourceDir'
+dumpsys package com.google.android.art | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|Version:|versionCode|IsActive|IsFactory|sourceDir'
 ```
 
 安全狀態通常是：
 
 ```text
-Active versionCode == Factory versionCode
+Active version == Factory version
 ```
 
 查看 staged sessions：
@@ -98,7 +98,7 @@ touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
 本模組不處理 UI，只處理 staged / active ART APEX。
 
 **`/data/apex/decompressed` 裡有 ART 不一定是更新版。**  
-三星 compressed ART 回到 factory-equivalent 狀態時可能會顯示在這裡，只要 Active 與 Factory versionCode 相同就是正常狀態。
+三星 compressed ART 回到 factory-equivalent 狀態時可能會顯示在這裡，只要 Active 與 Factory 版本相同就是正常狀態。
 
 **Android 11 或更舊版本可能沒有 `com.google.android.art`。**  
 這通常代表該裝置沒有 Android 12+ 的 Google ART Mainline 更新機制，模組會略過 ART 處理。
