@@ -27,11 +27,64 @@ update_description() {
   mv "$tmp" "$MODPATH/module.prop" 2>/dev/null
 }
 
-get_art_dumpsys() {
-  dumpsys package com.google.android.art 2>/dev/null
+get_android_sdk() {
+  getprop ro.build.version.sdk 2>/dev/null
 }
 
-has_google_art_apex() {
+get_android_release() {
+  getprop ro.build.version.release 2>/dev/null
+}
+
+android_label() {
+  release="$(get_android_release)"
+  sdk="$(get_android_sdk)"
+
+  [ -n "$release" ] || release="unknown"
+  [ -n "$sdk" ] || sdk="unknown"
+
+  echo "Android $release/API $sdk"
+}
+
+is_android_below_12() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -lt 31 ]
+}
+
+is_android_12_or_newer() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -ge 31 ]
+}
+
+abort_install() {
+  msg="$1"
+
+  ui "- $msg"
+  update_description "$msg"
+  log "$msg"
+
+  if command -v abort >/dev/null 2>&1; then
+    abort "$msg"
+  fi
+
+  exit 1
+}
+
+get_art_dumpsys() {
+  dumpsys package com.google.android.art 2>/dev/null
+  dumpsys package com.android.art 2>/dev/null
+}
+
+has_art_apex() {
   factory_ver="$(get_factory_art_version)"
 
   if [ -n "$factory_ver" ]; then
@@ -82,20 +135,28 @@ check_art_on_install() {
   ui ""
 
   log "[開始] 安裝時 ART 檢查"
+  android_info="$(android_label)"
+
+  ui "- 系統版本: $android_info"
+  log "[Android] $android_info"
+
+  if is_android_below_12; then
+    abort_install "[不支援] 僅支援 Android 12+ ART Mainline，$android_info 停止安裝。"
+  fi
 
   if ! command -v dumpsys >/dev/null 2>&1; then
     ui "- dumpsys 不可用，略過安裝時檢查"
-    update_description "[安裝] dumpsys 不可用，等待開機後檢查 ART。"
+    update_description "[安裝] $android_info dumpsys 不可用，等待開機後檢查 ART。"
     log "[略過] dumpsys 不可用"
     return
   fi
 
-  if ! has_google_art_apex; then
-    ui "- 未找到 Google ART APEX"
-    ui "- Android 11 或更舊版本通常不需要處理 ART 遠端更新"
-    update_description "[略過] 未找到 Google ART APEX。Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
-    log "[略過] 未找到 Google ART APEX"
-    return
+  if ! has_art_apex; then
+    if is_android_12_or_newer; then
+      abort_install "[錯誤] $android_info 應有 ART APEX，但未檢測到 com.google.android.art/com.android.art。"
+    fi
+
+    abort_install "[錯誤] 未檢測到 ART APEX，且無法確認系統為 Android 12+。"
   fi
 
   active_path="$(get_active_art_path)"

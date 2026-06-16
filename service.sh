@@ -40,6 +40,44 @@ update_description() {
   mv "$tmp" "$MODDIR/module.prop" 2>/dev/null
 }
 
+get_android_sdk() {
+  getprop ro.build.version.sdk 2>/dev/null
+}
+
+get_android_release() {
+  getprop ro.build.version.release 2>/dev/null
+}
+
+android_label() {
+  release="$(get_android_release)"
+  sdk="$(get_android_sdk)"
+
+  [ -n "$release" ] || release="unknown"
+  [ -n "$sdk" ] || sdk="unknown"
+
+  echo "Android $release/API $sdk"
+}
+
+is_android_below_12() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -lt 31 ]
+}
+
+is_android_12_or_newer() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -ge 31 ]
+}
+
 wait_boot_completed() {
   update_description "[等待] 等待系統開機完成後檢查 ART 狀態。"
   log "[WAIT] Waiting for sys.boot_completed=1"
@@ -86,9 +124,10 @@ disable_gpsu_overlay_only() {
 
 get_art_dumpsys() {
   dumpsys package com.google.android.art 2>/dev/null
+  dumpsys package com.android.art 2>/dev/null
 }
 
-has_google_art_apex() {
+has_art_apex() {
   factory_ver="$(get_factory_art_version)"
 
   if [ -n "$factory_ver" ]; then
@@ -96,6 +135,25 @@ has_google_art_apex() {
   fi
 
   return 1
+}
+
+handle_missing_art_apex() {
+  label="$(android_label)"
+
+  if is_android_below_12; then
+    log "[略過] $label 低於 Android 12，不處理 ART Mainline。"
+    update_description "[略過] $label 低於 Android 12，不處理 ART。"
+    return
+  fi
+
+  if is_android_12_or_newer; then
+    log "[錯誤] $label 應有 ART APEX，但未檢測到 com.google.android.art/com.android.art。"
+    update_description "[錯誤] $label 未檢測到 ART APEX，請檢查 ROM dumpsys。"
+    return
+  fi
+
+  log "[錯誤] 無法判斷 Android 版本，且未檢測到 ART APEX。"
+  update_description "[錯誤] 未檢測到 ART APEX，且無法判斷 Android 版本。"
 }
 
 get_active_art_version() {
@@ -192,7 +250,7 @@ cleanup_markers_if_art_ok() {
   if [ -n "$active_ver" ] && [ -n "$factory_ver" ]; then
     update_description "[正常] ART 已是內建等效版本。Active=$active_ver Factory=$factory_ver。"
   else
-    update_description "[正常] 未偵測到新版 ART，或此裝置無 Google ART APEX。"
+    handle_missing_art_apex
   fi
 }
 
@@ -203,9 +261,8 @@ force_remove_updated_art_apex() {
     return
   fi
 
-  if ! has_google_art_apex; then
-    log "[略過] 未找到可解析的 Google ART Factory 版本。Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
-    update_description "[略過] 未找到可解析的 Google ART Factory 版本。Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
+  if ! has_art_apex; then
+    handle_missing_art_apex
     return
   fi
 
@@ -279,6 +336,13 @@ log "[開始] service.sh started"
 
 rotate_log
 wait_boot_completed
+
+if is_android_below_12; then
+  label="$(android_label)"
+  log "[略過] $label 低於 Android 12，跳過 service ART/GPSU 處理。"
+  update_description "[略過] $label 低於 Android 12，不處理 ART。"
+  exit 0
+fi
 
 ensure_modulemetadata_present
 disable_gpsu_overlay_only

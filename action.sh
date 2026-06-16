@@ -18,11 +18,50 @@ update_description() {
   mv "$tmp" "$MODDIR/module.prop" 2>/dev/null
 }
 
-get_art_dumpsys() {
-  dumpsys package com.google.android.art 2>/dev/null
+get_android_sdk() {
+  getprop ro.build.version.sdk 2>/dev/null
 }
 
-has_google_art_apex() {
+get_android_release() {
+  getprop ro.build.version.release 2>/dev/null
+}
+
+android_label() {
+  release="$(get_android_release)"
+  sdk="$(get_android_sdk)"
+
+  [ -n "$release" ] || release="unknown"
+  [ -n "$sdk" ] || sdk="unknown"
+
+  echo "Android $release/API $sdk"
+}
+
+is_android_below_12() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -lt 31 ]
+}
+
+is_android_12_or_newer() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -ge 31 ]
+}
+
+get_art_dumpsys() {
+  dumpsys package com.google.android.art 2>/dev/null
+  dumpsys package com.android.art 2>/dev/null
+}
+
+has_art_apex() {
   factory_ver="$(get_factory_art_version)"
 
   if [ -n "$factory_ver" ]; then
@@ -30,6 +69,25 @@ has_google_art_apex() {
   fi
 
   return 1
+}
+
+print_missing_art_apex() {
+  label="$(android_label)"
+
+  if is_android_below_12; then
+    print_line "[略過] $label 低於 Android 12，不處理 ART Mainline。"
+    update_description "[略過] $label 低於 Android 12，不處理 ART。"
+    return
+  fi
+
+  if is_android_12_or_newer; then
+    print_line "[錯誤] $label 應有 ART APEX，但未檢測到 com.google.android.art/com.android.art。"
+    update_description "[錯誤] $label 未檢測到 ART APEX，請檢查 ROM dumpsys。"
+    return
+  fi
+
+  print_line "[錯誤] 無法判斷 Android 版本，且未檢測到 ART APEX。"
+  update_description "[錯誤] 未檢測到 ART APEX，且無法判斷 Android 版本。"
 }
 
 get_active_art_version() {
@@ -73,6 +131,7 @@ check_art_now() {
   print_line "==============================="
   print_line " Do Not ART Update - ART 檢查"
   print_line "==============================="
+  print_line "[Android] $(android_label)"
 
   if ! command -v dumpsys >/dev/null 2>&1; then
     print_line "[錯誤] dumpsys 不可用，無法檢查 ART。"
@@ -80,10 +139,8 @@ check_art_now() {
     return
   fi
 
-  if ! has_google_art_apex; then
-    print_line "[略過] 未找到 Google ART APEX。"
-    print_line "[略過] Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
-    update_description "[略過] 未找到 Google ART APEX。Android 11 或更舊版本通常不需要處理 ART 遠端更新。"
+  if ! has_art_apex; then
+    print_missing_art_apex
     return
   fi
 

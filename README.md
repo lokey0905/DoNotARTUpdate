@@ -22,6 +22,7 @@
 ## 功能
 
 - 安裝時與開機後檢查 ART Active / Factory 版本
+- 支援 `com.google.android.art` 與 `com.android.art` 兩種 ART APEX 包名
 - 偵測並移除 Google Play 更新後的 ART APEX
 - 支援三星 compressed / decompressed ART 狀態
 - 透過 `module.prop` description 顯示狀態，例如：
@@ -29,7 +30,8 @@
 ```text
 [正常] ART 已是內建等效版本。Active=331813010 Factory=331813010。
 [重啟] 已移除新版 ART，請重開機套用。Active=361501120 Factory=331813010。
-[略過] 未找到 Google ART APEX。Android 11 或更舊版本通常不需要處理 ART 遠端更新。
+[略過] Android 11/API 30 低於 Android 12，不處理 ART。
+[錯誤] Android 13/API 33 未檢測到 ART APEX，請檢查 ROM dumpsys。
 ```
 
 ## 不做的事
@@ -49,7 +51,9 @@
 查看 ART Active / Factory 狀態：
 
 ```sh
-dumpsys package com.google.android.art | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|Version:|versionCode|IsActive|IsFactory|sourceDir'
+for pkg in com.google.android.art com.android.art; do
+  dumpsys package "$pkg" | grep -iE 'Active APEX packages|Inactive APEX packages|Factory APEX packages|Path:|Version:|versionCode|IsActive|IsFactory|sourceDir'
+done
 ```
 
 安全狀態通常是：
@@ -100,8 +104,11 @@ touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
 **`/data/apex/decompressed` 裡有 ART 不一定是更新版。**  
 三星 compressed ART 回到 factory-equivalent 狀態時可能會顯示在這裡，只要 Active 與 Factory 版本相同就是正常狀態。
 
-**Android 11 或更舊版本可能沒有 `com.google.android.art`。**  
-這通常代表該裝置沒有 Android 12+ 的 Google ART Mainline 更新機制，模組會略過 ART 處理。
+**Android 11 或更舊版本不支援本模組處理的 Android 12+ ART Mainline 流程。**
+安裝時會拒絕 Android 12 以下版本；已安裝狀態下會顯示不支援並略過 ART 處理。
+
+**Android 12+ 如果未檢測到 ART APEX 不是正常略過。**
+模組會同時檢查 `com.google.android.art` 與 `com.android.art`。如果 Android 12+ 仍未檢測到，會顯示檢測異常，代表 ROM 的 `dumpsys package` 輸出格式或 APEX 狀態需要另外確認。
 
 ## 模組結構
 

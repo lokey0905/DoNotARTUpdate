@@ -24,6 +24,34 @@ update_description() {
   mv "$tmp" "$MODDIR/module.prop" 2>/dev/null
 }
 
+get_android_sdk() {
+  getprop ro.build.version.sdk 2>/dev/null
+}
+
+get_android_release() {
+  getprop ro.build.version.release 2>/dev/null
+}
+
+android_label() {
+  release="$(get_android_release)"
+  sdk="$(get_android_sdk)"
+
+  [ -n "$release" ] || release="unknown"
+  [ -n "$sdk" ] || sdk="unknown"
+
+  echo "Android $release/API $sdk"
+}
+
+is_android_below_12() {
+  sdk="$(get_android_sdk)"
+
+  case "$sdk" in
+    ''|*[!0-9]*) return 1 ;;
+  esac
+
+  [ "$sdk" -lt 31 ]
+}
+
 rotate_log() {
   if [ -f "$LOG" ]; then
     size="$(stat -c %s "$LOG" 2>/dev/null)"
@@ -72,6 +100,13 @@ early_force_remove_updated_art() {
 }
 
 rotate_log
+
+if is_android_below_12; then
+  label="$(android_label)"
+  log "[略過] $label 低於 Android 12，跳過開機早期 APEX 清理。"
+  update_description "[略過] $label 低於 Android 12，不處理 ART。"
+  exit 0
+fi
 
 update_description "[啟動] 開機早期清理 staged APEX 與新版 ART 中。"
 log "[START] post-fs-data.sh started"

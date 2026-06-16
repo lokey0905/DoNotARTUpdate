@@ -1,6 +1,6 @@
 id=DoNotARTUpdate
 name=Do Not ART Update
-version=v2.1.0
+version=v2.1.1
 versionCode=210
 author=lokey0905
 description=[INIT] Force Remove enabled. Waiting for ART status check.
