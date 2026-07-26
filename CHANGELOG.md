@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.0-test1
+
+- 以 PackageInstaller staged session guard 取代 raw APEX 檔案與 session 目錄刪除。
+- 每 30 秒查詢 ready parent session，並每 5 分鐘完整掃描包含 ART 的 Mainline train。
+- 測試版預設為 monitor-only；建立 `enable_session_abandon` 後才會取消父層 train。
+- 不再停用 modulemetadata overlay，並等待 PackageManager 實際可用後再查詢。
+
 ## 2.1.2
 
 - 安裝時拒絕與 `ART_Uninstall`、`ART_fix` 同時啟用。

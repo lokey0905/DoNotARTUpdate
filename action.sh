@@ -166,19 +166,16 @@ check_art_now() {
 
   if [ "$active_ver" -gt "$factory_ver" ]; then
     print_line "[警告] 偵測到新版 ART。"
-    print_line "[提示] 重開機時 service.sh 會預設嘗試移除新版 ART。"
-    update_description "[警告] 偵測到新版 ART。Active=$active_ver Factory=$factory_ver，重開後將嘗試移除。"
+    print_line "[提示] session guard 不會直接刪除已啟用的 ART APEX。"
+    update_description "[警告] 已啟用新版 ART，不直接刪 APEX。Active=$active_ver Factory=$factory_ver。"
   else
     print_line "[正常] ART 已是內建等效版本。"
-    update_description "[正常] ART 已是內建等效版本。Active=$active_ver Factory=$factory_ver。"
-  fi
-
-  if [ -f "$MODDIR/reboot_required_after_art_remove" ]; then
-    print_line "[重啟] 偵測到新版 ART 已移除標記，請重開機套用。"
-    update_description "[重啟] 已移除新版 ART，請重開機套用。"
+    update_description "[正常] ART session guard 監控中。Active=$active_ver Factory=$factory_ver。"
   fi
 
   print_line "==============================="
 }
 
 check_art_now
+print_line "[SESSION] PackageInstaller ART staged session 檢查："
+"$MODDIR/service.sh" --check-sessions

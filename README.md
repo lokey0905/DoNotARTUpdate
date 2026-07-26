@@ -12,36 +12,40 @@
 > - [`zwajton/ART-downgrade`](https://github.com/zwajton/ART-downgrade)（模組 ID：`ART_Uninstall`）
 > - `ART_fix`（模組 ID：`ART_fix`）
 >
-> 同時使用可能造成 APEX staged session 與實際 ART 檔案狀態不一致，導致 zygote crash 或 bootloop。安裝程式會拒絕併裝；若衝突模組是在之後安裝，開機腳本會停止所有 APEX 清理及 ART 移除。
+> 同時使用可能造成 APEX staged session 與實際 ART 檔案狀態不一致，導致 zygote crash 或 bootloop。安裝程式會拒絕併裝；若衝突模組是在之後安裝，session guard 會停止處理。
 
 ## 目前策略
 
-本模組採用 **Force Remove 模式**：
+`v2.2.0-test1` 採用 **PackageInstaller staged session guard**：
 
-- 清除尚未套用的 staged APEX sessions：`/data/apex/sessions/*`
-- 開機早期移除 updated ART active APEX：
-  - `/data/apex/active/com.android.art@*.apex`
-  - `/data/apex/active/com.google.android.art@*.apex`
+- 等待 `PackageManager` 可用後，每 30 秒查詢 ready parent sessions
+- 每 5 分鐘完整解析一次 staged session 記錄
+- 從 PackageInstaller session 記錄識別：
+  - `com.android.art`
+  - `com.google.android.art`
+- 如果 ART 是 multi-package Mainline train 的 child session，定位並處理父層 session
+- 測試版預設為 `monitor-only`
+- 建立 `enable_session_abandon` marker 後，才使用 `cmd package install-abandon <parentSessionId>`
 - 保留 `com.google.android.modulemetadata` 主套件
-- 僅嘗試停用 modulemetadata overlay：
-  - `com.google.android.overlay.modules.modulemetadata.forframework`
-- 不使用 `pm rollback-app`
-- 不使用 `pm uninstall-system-updates`
-- 不刪除 `/system/apex`、`/apex`、`/data/apex/decompressed`
+- 不再直接刪除 `/data/apex/sessions`、`/metadata/apex/sessions` 或 `/data/apex/active`
+
+取消父層 Mainline train 會同時取消該 train 內的其他模組，不是只移除 ART child session。
 
 ## 功能
 
 - 安裝時與開機後檢查 ART Active / Factory 版本
 - 支援 `com.google.android.art` 與 `com.android.art` 兩種 ART APEX 包名
-- 偵測並移除 Google Play 更新後的 ART APEX
+- 持續偵測包含 ART 的 PackageInstaller staged train
+- 提供 monitor-only 與明確啟用的 session abandon 模式
 - 支援三星 compressed / decompressed ART 狀態
 - 安裝與開機時偵測 `ART_Uninstall`、`ART_fix` 衝突模組並停止處理
 - 支援 Magisk App 透過 `updateJson` 檢查及下載線上更新
 - 透過 `module.prop` description 顯示狀態，例如：
 
 ```text
-[正常] ART 已是內建等效版本。Active=331813010 Factory=331813010。
-[重啟] 已移除新版 ART，請重開機套用。Active=361501120 Factory=331813010。
+[正常] ART session guard 監控中。Active=331813010 Factory=331813010。
+[偵測] ART Mainline staged train。Session=123456 Ready=true Mode=monitor。
+[處理] 已送出 ART Mainline train 取消請求。Session=123456。
 [略過] Android 11/API 30 低於 Android 12，不處理 ART。
 [錯誤] Android 13/API 33 未檢測到 ART APEX，請檢查 ROM dumpsys。
 ```
@@ -49,9 +53,12 @@
 ## 不做的事
 
 - 不停用 Play Store 的 Google Play 系統更新 UI
+- 不阻止 Google Play 下載 Mainline 更新
 - 不停用或 uninstall `com.google.android.modulemetadata`
-- 不刪除 factory / mounted / decompressed APEX
-- 預設不自動重開機
+- 不直接刪除 active、factory、mounted、decompressed APEX
+- 不直接刪除 apexd 或 PackageInstaller session 檔案
+- 不自動回復已經啟用的新版 ART
+- 不自動重開機
 - 不保證所有 Android 版本與 ROM 都能完全阻止 ART 更新
 
 ## 安裝
@@ -81,8 +88,9 @@ Active version == Factory version
 查看 staged sessions：
 
 ```sh
-cmd package list staged-sessions
-cmd package list staged-sessions | grep -i art
+cmd package list staged-sessions --only-parent
+cmd package list staged-sessions --only-ready --only-parent
+sh /data/adb/modules/DoNotARTUpdate/service.sh --check-sessions
 ```
 
 查看模組 log：
@@ -95,27 +103,29 @@ cat /data/adb/modules/DoNotARTUpdate/gpsu_art_guard.log
 
 | 檔案 | 說明 |
 |---|---|
-| `disable_force_remove` | 只監控 ART，不自動移除 updated ART |
-| `auto_reboot_after_remove` | 移除 updated ART 後自動重啟 |
-| `reboot_required_after_art_remove` | 已移除 updated ART，需要重開機 |
-| `unsafe_art_path_detected` | 偵測到不安全路徑，已拒絕移除 |
+| `enable_session_abandon` | 取消偵測到的 ART 父層 staged train；測試版預設不存在 |
+| `disable_session_guard` | 暫停 staged session 查詢與處理 |
+| `art_update_detected` | Active ART 已高於 Factory ART |
 
-啟用自動重啟：
+啟用 staged train 取消：
 
 ```sh
-touch /data/adb/modules/DoNotARTUpdate/auto_reboot_after_remove
+touch /data/adb/modules/DoNotARTUpdate/enable_session_abandon
 ```
 
-停用 Force Remove：
+暫停 session guard：
 
 ```sh
-touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
+touch /data/adb/modules/DoNotARTUpdate/disable_session_guard
 ```
 
 ## 常見狀況
 
 **Google Play 系統更新 UI 還能打開是正常的。**  
-本模組不處理 UI，只處理 staged / active ART APEX。
+本模組不處理 UI 或下載。monitor-only 只記錄 session；abandon 模式會在重啟套用前取消包含 ART 的父層 staged train。
+
+**已經啟用的新版 ART 不會被本測試版直接降回 factory。**
+session guard 只處理尚未套用的交易，避免再次使用 raw APEX 檔案刪除造成 session 與實際檔案狀態不一致。
 
 **`/data/apex/decompressed` 裡有 ART 不一定是更新版。**  
 三星 compressed ART 回到 factory-equivalent 狀態時可能會顯示在這裡，只要 Active 與 Factory 版本相同就是正常狀態。

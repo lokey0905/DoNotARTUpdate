@@ -200,12 +200,12 @@ check_art_on_install() {
 
   if [ "$active_ver" -gt "$factory_ver" ]; then
     ui "- 偵測到新版 ART"
-    ui "- 開機後 service.sh 會預設 Force Remove"
-    update_description "[安裝警告] 偵測到新版 ART。Active=$active_ver Factory=$factory_ver，開機後將嘗試移除。"
+    ui "- 測試版不會直接刪除已啟用的 ART APEX"
+    update_description "[安裝警告] 已啟用新版 ART；session guard 只處理後續 staged train。"
     log "[警告] 安裝時偵測到新版 ART"
   else
     ui "- ART 已是內建等效版本"
-    update_description "[安裝正常] ART 已是內建等效版本。Active=$active_ver Factory=$factory_ver。"
+    update_description "[安裝正常] ART session guard 將以 monitor-only 模式啟動。"
     log "[正常] ART 已是內建等效版本"
   fi
 

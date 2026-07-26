@@ -3,21 +3,23 @@
 MODDIR=${0%/*}
 LOG="$MODDIR/gpsu_art_guard.log"
 
-REBOOT_REQUIRED_MARKER="$MODDIR/reboot_required_after_art_remove"
-ART_REMOVED_MARKER="$MODDIR/updated_art_removed"
 ART_UPDATED_MARKER="$MODDIR/art_update_detected"
-ART_UNSAFE_MARKER="$MODDIR/unsafe_art_path_detected"
-
-# 建立這個檔案可以暫時關閉 Force Remove：
-# touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
-DISABLE_FORCE_MARKER="$MODDIR/disable_force_remove"
-
-# 建立這個檔案可以在移除新版 ART 後自動重啟：
-# touch /data/adb/modules/DoNotARTUpdate/auto_reboot_after_remove
-AUTO_REBOOT_MARKER="$MODDIR/auto_reboot_after_remove"
+ENABLE_SESSION_ABANDON_MARKER="$MODDIR/enable_session_abandon"
+DISABLE_SESSION_GUARD_MARKER="$MODDIR/disable_session_guard"
+SESSION_POLL_SECONDS=30
+SESSION_FULL_SCAN_CYCLES=10
+SESSION_TEST_MODE=0
+SESSION_GUARD_DUMPSYS_FILE="${SESSION_GUARD_DUMPSYS_FILE:-}"
+SESSION_ABANDON_REQUESTED_IDS=""
 
 log() {
-  echo "[service] $(date '+%F %T') $*" >> "$LOG"
+  entry="[service] $(date '+%F %T') $*"
+
+  if [ "$SESSION_TEST_MODE" -eq 1 ]; then
+    echo "$entry"
+  else
+    echo "$entry" >> "$LOG"
+  fi
 }
 
 rotate_log() {
@@ -102,15 +104,27 @@ wait_boot_completed() {
     sleep 5
   done
 
-  update_description "[檢查] 系統已開機，等待 PackageManager 穩定後檢查 ART。"
-
-  sleep 30
   log "[OK] Boot completed"
 }
 
-clear_apex_sessions_late() {
-  log "[清理] 再次清除 staged APEX sessions: /data/apex/sessions/*"
-  rm -rf /data/apex/sessions/* 2>/dev/null
+wait_package_manager_ready() {
+  attempt=0
+
+  update_description "[檢查] 等待 PackageManager 穩定後啟動 ART session guard。"
+
+  while [ "$attempt" -lt 18 ]; do
+    if pm path android 2>/dev/null | grep -q '^package:'; then
+      log "[OK] PackageManager ready"
+      return 0
+    fi
+
+    attempt=$((attempt + 1))
+    sleep 10
+  done
+
+  log "[錯誤] PackageManager 等待 180 秒後仍不可用"
+  update_description "[錯誤] PackageManager 不可用，ART session guard 將持續重試。"
+  return 1
 }
 
 ensure_modulemetadata_present() {
@@ -123,19 +137,226 @@ ensure_modulemetadata_present() {
     pm install-existing --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1
   fi
 
-  pm enable --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1
-  log "[正常] 保持 com.google.android.modulemetadata 主套件啟用"
+  if pm list packages --user 0 -d 2>/dev/null |
+     grep -q "^package:com.google.android.modulemetadata$"; then
+    if pm enable --user 0 com.google.android.modulemetadata >> "$LOG" 2>&1; then
+      log "[修復] 已重新啟用 com.google.android.modulemetadata 主套件"
+    else
+      log "[警告] 無法重新啟用 com.google.android.modulemetadata 主套件"
+    fi
+    return
+  fi
+
+  log "[正常] com.google.android.modulemetadata 主套件已啟用"
 }
 
-disable_gpsu_overlay_only() {
-  log "[GPSU] 僅停用 modulemetadata overlay"
+get_package_dump() {
+  if [ -n "$SESSION_GUARD_DUMPSYS_FILE" ] && [ -f "$SESSION_GUARD_DUMPSYS_FILE" ]; then
+    cat "$SESSION_GUARD_DUMPSYS_FILE"
+  else
+    dumpsys package 2>/dev/null
+  fi
+}
 
-  # 只停用 overlay，不碰 com.google.android.modulemetadata 主套件。
-  pm disable-user --user 0 com.google.android.overlay.modules.modulemetadata.forframework >> "$LOG" 2>&1
+get_staged_session_records() {
+  get_package_dump | awk '
+    function emit_session() {
+      if (session_id != "" && is_staged == "true") {
+        print session_id "|" parent_id "|" package_name "|" is_applied "|" is_failed "|" is_ready "|" is_destroyed
+      }
 
-  log "[資訊] modulemetadata 套件狀態："
-  pm list packages --user 0 2>/dev/null | grep -i modulemetadata >> "$LOG" 2>&1
-  pm list packages --user 0 -d 2>/dev/null | grep -i modulemetadata >> "$LOG" 2>&1
+      session_id = ""
+      parent_id = ""
+      package_name = ""
+      is_staged = ""
+      is_applied = ""
+      is_failed = ""
+      is_ready = ""
+      is_destroyed = ""
+    }
+
+    /^[[:space:]]*Session [0-9][0-9]*:$/ {
+      emit_session()
+      session_id = $2
+      sub(/:$/, "", session_id)
+      next
+    }
+
+    session_id != "" {
+      for (i = 1; i <= NF; i++) {
+        if ($i ~ /^appPackageName=/) {
+          split($i, value, "=")
+          package_name = value[2]
+        } else if ($i ~ /^params\.isStaged=/) {
+          split($i, value, "=")
+          is_staged = value[2]
+        } else if ($i ~ /^mParentSessionId=/) {
+          split($i, value, "=")
+          parent_id = value[2]
+        } else if ($i ~ /^mStagedSessionApplied=/) {
+          split($i, value, "=")
+          is_applied = value[2]
+        } else if ($i ~ /^mStagedSessionFailed=/) {
+          split($i, value, "=")
+          is_failed = value[2]
+        } else if ($i ~ /^mStagedSessionReady=/) {
+          split($i, value, "=")
+          is_ready = value[2]
+        } else if ($i ~ /^mDestroyed=/) {
+          split($i, value, "=")
+          is_destroyed = value[2]
+        }
+      }
+    }
+
+    /^[[:space:]]*Historical install sessions:/ {
+      emit_session()
+      exit
+    }
+
+    END {
+      emit_session()
+    }
+  '
+}
+
+get_art_parent_session_ids() {
+  records="$1"
+
+  printf '%s\n' "$records" \
+    | awk -F '|' '
+        $3 == "com.google.android.art" || $3 == "com.android.art" {
+          if ($2 != "" && $2 != "-1") {
+            print $2
+          } else {
+            print $1
+          }
+        }
+      ' \
+    | sort -u
+}
+
+get_session_record() {
+  records="$1"
+  target_id="$2"
+
+  printf '%s\n' "$records" \
+    | awk -F '|' -v target="$target_id" '$1 == target { print; exit }'
+}
+
+session_guard_mode() {
+  if [ -f "$ENABLE_SESSION_ABANDON_MARKER" ]; then
+    echo "abandon"
+  else
+    echo "monitor"
+  fi
+}
+
+abandon_art_parent_session() {
+  parent_id="$1"
+
+  log "[SESSION] 取消包含 ART 的父層 staged train: $parent_id"
+  abandon_output="$(cmd package install-abandon "$parent_id" 2>&1)"
+  rc=$?
+
+  if [ -n "$abandon_output" ]; then
+    log "[SESSION] install-abandon output: $abandon_output"
+  fi
+
+  if [ "$rc" -eq 0 ]; then
+    SESSION_ABANDON_REQUESTED_IDS="$SESSION_ABANDON_REQUESTED_IDS $parent_id"
+    log "[SESSION] 已送出取消請求: parent=$parent_id"
+    update_description "[處理] 已送出 ART Mainline train 取消請求。Session=$parent_id。"
+    return 0
+  fi
+
+  log "[錯誤] 無法取消 ART staged train: parent=$parent_id rc=$rc"
+  update_description "[錯誤] 偵測到 ART staged train，但取消失敗。Session=$parent_id。"
+  return 1
+}
+
+check_art_staged_sessions() {
+  mode="$1"
+
+  if [ "$SESSION_TEST_MODE" -ne 1 ]; then
+    package_probe="$(pm path android 2>&1)"
+    if ! printf '%s\n' "$package_probe" | grep -q '^package:'; then
+      log "[警告] PackageInstaller staged session 查詢失敗"
+      return 1
+    fi
+  fi
+
+  records="$(get_staged_session_records)"
+  art_parent_ids="$(get_art_parent_session_ids "$records")"
+
+  [ -n "$art_parent_ids" ] || return 0
+
+  for parent_id in $art_parent_ids; do
+    record="$(get_session_record "$records" "$parent_id")"
+    [ -n "$record" ] || continue
+
+    old_ifs="$IFS"
+    IFS='|'
+    read -r session_id ignored_parent package_name is_applied is_failed is_ready is_destroyed <<EOF
+$record
+EOF
+    IFS="$old_ifs"
+
+    if [ "$SESSION_TEST_MODE" -eq 1 ]; then
+      log "[SESSION] ART parent=$session_id package=$package_name applied=$is_applied failed=$is_failed ready=$is_ready destroyed=$is_destroyed"
+    fi
+
+    [ "$is_applied" = "true" ] && continue
+    [ "$is_failed" = "true" ] && continue
+    [ "$is_destroyed" = "true" ] && continue
+
+    log "[SESSION] 偵測到 ART staged train: parent=$session_id ready=$is_ready mode=$mode"
+    update_description "[偵測] ART Mainline staged train。Session=$session_id Ready=$is_ready Mode=$mode。"
+
+    if [ "$mode" = "abandon" ]; then
+      case " $SESSION_ABANDON_REQUESTED_IDS " in
+        *" $session_id "*)
+          log "[SESSION] 已送出取消請求，等待 PackageInstaller 完成: parent=$session_id"
+          ;;
+        *)
+          abandon_art_parent_session "$session_id"
+          ;;
+      esac
+    else
+      log "[SESSION] monitor-only，未取消 parent=$session_id"
+    fi
+  done
+}
+
+monitor_art_staged_sessions() {
+  scan_cycle=1
+
+  log "[SESSION] 持續監控已啟動，ready_poll=${SESSION_POLL_SECONDS}s full_scan_cycles=$SESSION_FULL_SCAN_CYCLES"
+
+  while true; do
+    if [ -f "$DISABLE_SESSION_GUARD_MARKER" ]; then
+      sleep "$SESSION_POLL_SECONDS"
+      continue
+    fi
+
+    if has_conflicting_module; then
+      log "[衝突] 監控期間偵測到 ART_Uninstall 或 ART_fix，本輪停止處理"
+      sleep "$SESSION_POLL_SECONDS"
+      continue
+    fi
+
+    mode="$(session_guard_mode)"
+    ready_parent_ids="$(cmd package list staged-sessions --only-ready --only-sessionid --only-parent 2>/dev/null)"
+
+    if [ -n "$ready_parent_ids" ] || [ "$scan_cycle" -ge "$SESSION_FULL_SCAN_CYCLES" ]; then
+      check_art_staged_sessions "$mode"
+      scan_cycle=1
+    else
+      scan_cycle=$((scan_cycle + 1))
+    fi
+
+    sleep "$SESSION_POLL_SECONDS"
+  done
 }
 
 get_art_dumpsys() {
@@ -243,40 +464,7 @@ log_art_status() {
   log "[ART] ===== ART APEX 狀態結束 ====="
 }
 
-cleanup_markers_if_art_ok() {
-  active_ver="$(get_active_art_version)"
-  factory_ver="$(get_factory_art_version)"
-
-  if [ -z "$active_ver" ] && [ -n "$factory_ver" ]; then
-    log "[重啟] Active ART 為空，但 Factory ART 存在。保留重啟提示。"
-    touch "$REBOOT_REQUIRED_MARKER"
-    update_description "[重啟] 新版 ART 已移除，請再重開機套用。Factory=$factory_ver。"
-    return
-  fi
-
-  if is_art_updated_version; then
-    touch "$ART_UPDATED_MARKER"
-    return
-  fi
-
-  rm -f "$ART_UPDATED_MARKER"
-  rm -f "$REBOOT_REQUIRED_MARKER"
-  rm -f "$ART_UNSAFE_MARKER"
-
-  if [ -n "$active_ver" ] && [ -n "$factory_ver" ]; then
-    update_description "[正常] ART 已是內建等效版本。Active=$active_ver Factory=$factory_ver。"
-  else
-    handle_missing_art_apex
-  fi
-}
-
-force_remove_updated_art_apex() {
-  if [ -f "$DISABLE_FORCE_MARKER" ]; then
-    log "[略過] disable_force_remove marker 存在，Force Remove 已停用"
-    update_description "[略過] Force Remove 已停用，只監控 ART 狀態。"
-    return
-  fi
-
+report_active_art_state() {
   if ! has_art_apex; then
     handle_missing_art_apex
     return
@@ -284,76 +472,37 @@ force_remove_updated_art_apex() {
 
   active_ver="$(get_active_art_version)"
   factory_ver="$(get_factory_art_version)"
-  active_path="$(get_active_art_path)"
-  
-  if [ -z "$active_ver" ] && [ -n "$factory_ver" ]; then
-    log "[重啟] Active ART 為空，但 Factory ART 存在。可能已移除新版 ART，等待重開機重建 active ART。"
-    touch "$REBOOT_REQUIRED_MARKER"
-    update_description "[重啟] 新版 ART 已移除，請再重開機套用。Factory=$factory_ver。"
+
+  if [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then
+    log "[警告] 無法解析 ART 版本，session guard 仍會繼續監控"
+    update_description "[警告] 無法解析 ART 版本，ART session guard 仍在監控。"
     return
   fi
 
-  if ! is_art_updated_version; then
-    log "[正常] Active ART 不高於 Factory ART，不需要移除"
-    cleanup_markers_if_art_ok
+  if is_art_updated_version; then
+    touch "$ART_UPDATED_MARKER"
+    log "[警告] 已啟用的 ART 高於 Factory；session guard 不會直接刪除 active APEX"
+    update_description "[警告] 已啟用新版 ART，不直接刪 APEX。Active=$active_ver Factory=$factory_ver。"
     return
   fi
 
-  log "[警告] 偵測到新版 ART"
-  log "[ART] Active path=$active_path"
-  log "[ART] Active versionCode=$active_ver"
-  log "[ART] Factory versionCode=$factory_ver"
-
-  if [ -z "$active_path" ] || [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then
-    log "[錯誤] 無法解析 ART path/version，停止 Force Remove"
-    update_description "[錯誤] 偵測到新版 ART，但無法解析路徑或版本，已停止移除。"
-    return
-  fi
-
-  case "$active_path" in
-    /data/apex/active/com.android.art@*.apex|/data/apex/active/com.google.android.art@*.apex)
-      log "[移除] 移除新版 ART APEX: $active_path"
-
-      rm -rf "$active_path" >> "$LOG" 2>&1
-      rc=$?
-
-      sync
-
-      if [ "$rc" -eq 0 ]; then
-        log "[重啟] 已移除新版 ART APEX，需要重開機套用"
-
-        touch "$ART_REMOVED_MARKER"
-        touch "$REBOOT_REQUIRED_MARKER"
-        rm -f "$ART_UNSAFE_MARKER"
-
-        update_description "[重啟] 已移除新版 ART，請重開機套用。Active=$active_ver Factory=$factory_ver。"
-
-        if [ -f "$AUTO_REBOOT_MARKER" ]; then
-          log "[重啟] 偵測到 auto_reboot_after_remove marker，10 秒後自動重啟"
-          update_description "[重啟] 已移除新版 ART，10 秒後自動重啟。"
-          sleep 10
-          reboot
-        fi
-      else
-        log "[錯誤] 移除新版 ART APEX 失敗，rc=$rc"
-        update_description "[錯誤] 偵測到新版 ART，但移除失敗。Active=$active_ver Factory=$factory_ver。"
-      fi
-      ;;
-    *)
-      log "[錯誤] ART 路徑不安全，停止移除: $active_path"
-
-      touch "$ART_UNSAFE_MARKER"
-      update_description "[錯誤] ART 路徑不安全，已停止移除。"
-      ;;
-  esac
+  rm -f "$ART_UPDATED_MARKER"
+  log "[正常] Active ART 不高於 Factory ART"
+  update_description "[正常] ART session guard 監控中。Active=$active_ver Factory=$factory_ver。"
 }
+
+if [ "$1" = "--check-sessions" ]; then
+  SESSION_TEST_MODE=1
+  check_art_staged_sessions "monitor"
+  exit $?
+fi
 
 log "[開始] service.sh started"
 
 rotate_log
 
 if has_conflicting_module; then
-  log "[衝突] 偵測到 ART_Uninstall 或 ART_fix，停止所有 APEX 清理與 ART 移除。"
+  log "[衝突] 偵測到 ART_Uninstall 或 ART_fix，停止 ART session guard。"
   update_description "[衝突] 請移除 ART-downgrade / ART_fix，禁止同時使用。"
   exit 0
 fi
@@ -367,11 +516,12 @@ if is_android_below_12; then
   exit 0
 fi
 
-ensure_modulemetadata_present
-disable_gpsu_overlay_only
-clear_apex_sessions_late
+if wait_package_manager_ready; then
+  ensure_modulemetadata_present
+fi
 
 log_art_status
-force_remove_updated_art_apex
+report_active_art_state
 
-log "[完成] service.sh finished"
+check_art_staged_sessions "$(session_guard_mode)"
+monitor_art_staged_sessions

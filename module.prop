@@ -1,7 +1,7 @@
 id=DoNotARTUpdate
 name=Do Not ART Update
-version=v2.1.2
-versionCode=211
+version=v2.2.0-test1
+versionCode=220
 author=lokey0905
-description=[INIT] Force Remove enabled. Waiting for ART status check.
 updateJson=https://raw.githubusercontent.com/lokey0905/donnotARTUpdate/main/update.json
+description=[偵測] ART Mainline staged train。Session=100 Ready=true Mode=monitor。
