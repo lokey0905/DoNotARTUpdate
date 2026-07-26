@@ -79,6 +79,23 @@ abort_install() {
   exit 1
 }
 
+check_conflicting_modules() {
+  for base in /data/adb/modules /data/adb/modules_update; do
+    for id in ART_Uninstall ART_fix; do
+      conflict_dir="$base/$id"
+
+      if [ -d "$conflict_dir" ] &&
+         [ ! -f "$conflict_dir/remove" ] &&
+         [ ! -f "$conflict_dir/disable" ]; then
+        ui "! 偵測到衝突模組：$id"
+        ui "! DoNotARTUpdate 不可與 ART-downgrade / ART_fix 同時使用"
+        ui "! 請先移除衝突模組並重開機後再安裝"
+        abort_install "[衝突] 偵測到 $id，請先移除 ART-downgrade / ART_fix 並重開機。"
+      fi
+    done
+  done
+}
+
 get_art_dumpsys() {
   dumpsys package com.google.android.art 2>/dev/null
   dumpsys package com.android.art 2>/dev/null
@@ -195,6 +212,7 @@ check_art_on_install() {
   ui ""
 }
 
+check_conflicting_modules
 check_art_on_install
 
 set_perm "$MODPATH/post-fs-data.sh" 0 0 0755

@@ -4,6 +4,16 @@
 
 > ⚠️ 這是進階系統修改工具。請先確認你具備 recovery / fastboot / factory image 救援能力；錯誤操作可能造成 bootloop。
 
+> [!CAUTION]
+> DoNotARTUpdate 不可與其他 ART 降版、移除或卸載模組同時使用。
+>
+> 已知衝突：
+>
+> - [`zwajton/ART-downgrade`](https://github.com/zwajton/ART-downgrade)（模組 ID：`ART_Uninstall`）
+> - `ART_fix`（模組 ID：`ART_fix`）
+>
+> 同時使用可能造成 APEX staged session 與實際 ART 檔案狀態不一致，導致 zygote crash 或 bootloop。安裝程式會拒絕併裝；若衝突模組是在之後安裝，開機腳本會停止所有 APEX 清理及 ART 移除。
+
 ## 目前策略
 
 本模組採用 **Force Remove 模式**：
@@ -25,6 +35,8 @@
 - 支援 `com.google.android.art` 與 `com.android.art` 兩種 ART APEX 包名
 - 偵測並移除 Google Play 更新後的 ART APEX
 - 支援三星 compressed / decompressed ART 狀態
+- 安裝與開機時偵測 `ART_Uninstall`、`ART_fix` 衝突模組並停止處理
+- 支援 Magisk App 透過 `updateJson` 檢查及下載線上更新
 - 透過 `module.prop` description 顯示狀態，例如：
 
 ```text
@@ -45,6 +57,10 @@
 ## 安裝
 
 從 Release 下載最新模組 ZIP，之後將模組 ZIP 透過 Magisk / KernelSU / APatch 安裝，然後重開機。
+
+## 線上更新
+
+Magisk App 會從 [`update.json`](https://raw.githubusercontent.com/lokey0905/donnotARTUpdate/main/update.json) 讀取最新版本、更新內容與 Release ZIP。發布新版本時，Release tag 應與版本號一致，並附加名為 `DoNotARTUpdate.zip` 的資產。
 
 ## 驗證
 
@@ -115,6 +131,8 @@ touch /data/adb/modules/DoNotARTUpdate/disable_force_remove
 ```text
 DoNotARTUpdate/
 ├── module.prop
+├── update.json
+├── CHANGELOG.md
 ├── customize.sh
 ├── post-fs-data.sh
 ├── service.sh

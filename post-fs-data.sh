@@ -61,6 +61,22 @@ rotate_log() {
   fi
 }
 
+has_conflicting_module() {
+  for base in /data/adb/modules /data/adb/modules_update; do
+    for id in ART_Uninstall ART_fix; do
+      conflict_dir="$base/$id"
+
+      if [ -d "$conflict_dir" ] &&
+         [ ! -f "$conflict_dir/remove" ] &&
+         [ ! -f "$conflict_dir/disable" ]; then
+        return 0
+      fi
+    done
+  done
+
+  return 1
+}
+
 early_force_remove_updated_art() {
   if [ -f "$DISABLE_FORCE_MARKER" ]; then
     log "[略過] disable_force_remove marker 存在，開機早期 Force Remove 已停用"
@@ -100,6 +116,12 @@ early_force_remove_updated_art() {
 }
 
 rotate_log
+
+if has_conflicting_module; then
+  log "[衝突] 偵測到 ART_Uninstall 或 ART_fix，停止所有 APEX 清理與 ART 移除。"
+  update_description "[衝突] 請移除 ART-downgrade / ART_fix，禁止同時使用。"
+  exit 0
+fi
 
 if is_android_below_12; then
   label="$(android_label)"

@@ -29,6 +29,22 @@ rotate_log() {
   fi
 }
 
+has_conflicting_module() {
+  for base in /data/adb/modules /data/adb/modules_update; do
+    for id in ART_Uninstall ART_fix; do
+      conflict_dir="$base/$id"
+
+      if [ -d "$conflict_dir" ] &&
+         [ ! -f "$conflict_dir/remove" ] &&
+         [ ! -f "$conflict_dir/disable" ]; then
+        return 0
+      fi
+    done
+  done
+
+  return 1
+}
+
 update_description() {
   desc="$1"
   tmp="$MODDIR/module.prop.tmp"
@@ -335,6 +351,13 @@ force_remove_updated_art_apex() {
 log "[開始] service.sh started"
 
 rotate_log
+
+if has_conflicting_module; then
+  log "[衝突] 偵測到 ART_Uninstall 或 ART_fix，停止所有 APEX 清理與 ART 移除。"
+  update_description "[衝突] 請移除 ART-downgrade / ART_fix，禁止同時使用。"
+  exit 0
+fi
+
 wait_boot_completed
 
 if is_android_below_12; then
