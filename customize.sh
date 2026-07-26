@@ -136,6 +136,35 @@ get_active_art_path() {
     | head -n 1
 }
 
+get_active_art_is_factory() {
+  get_art_dumpsys \
+    | awk '
+        /Active APEX packages:/ {
+          active_section = 1
+          next
+        }
+
+        /Inactive APEX packages:/ {
+          active_section = 0
+        }
+
+        active_section && $1 == "IsFactory:" {
+          print $2
+          exit
+        }
+
+        active_section {
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^isFactory=/) {
+              split($i, value, "=")
+              print value[2]
+              exit
+            }
+          }
+        }
+      '
+}
+
 get_factory_art_path() {
   get_art_dumpsys \
     | sed -n '/Factory APEX packages:/,$p' \
@@ -180,6 +209,7 @@ check_art_on_install() {
   factory_path="$(get_factory_art_path)"
   active_ver="$(get_active_art_version)"
   factory_ver="$(get_factory_art_version)"
+  active_is_factory="$(get_active_art_is_factory)"
 
   ui "- Active ART path: $active_path"
   ui "- Factory ART path: $factory_path"
@@ -198,14 +228,49 @@ check_art_on_install() {
     return
   fi
 
-  if [ "$active_ver" -gt "$factory_ver" ]; then
-    ui "- 偵測到新版 ART"
+  active_updated=0
+
+  case "$active_is_factory" in
+    false)
+      active_updated=1
+      ;;
+    true)
+      active_updated=0
+      ;;
+    *)
+      if [ "$active_ver" -gt "$factory_ver" ]; then
+        active_updated=1
+      elif [ "$active_path" != "$factory_path" ]; then
+        case "$active_path" in
+          /data/apex/active/*) active_updated=1 ;;
+        esac
+      fi
+      ;;
+  esac
+
+  pending_line="$(
+    sh "$MODPATH/service.sh" --check-sessions 2>/dev/null \
+      | grep '\[狀態2\]' \
+      | head -n 1
+  )"
+
+  if [ -n "$pending_line" ]; then
+    ui "- 狀態2：偵測到 ART 更新交易，等待重開機套用"
+    log "$pending_line"
+
+    if [ "$active_updated" -eq 1 ]; then
+      update_description "[狀態3+2] 已安裝新版 ART，另有待套用 ART 更新。"
+    else
+      update_description "[狀態2] ART 更新等待重開機套用。"
+    fi
+  elif [ "$active_updated" -eq 1 ]; then
+    ui "- 狀態3：已安裝新版 ART"
     ui "- 測試版不會直接刪除已啟用的 ART APEX"
-    update_description "[安裝警告] 已啟用新版 ART；session guard 只處理後續 staged train。"
+    update_description "[狀態3] 已安裝新版 ART。Active=$active_ver Factory=$factory_ver。"
     log "[警告] 安裝時偵測到新版 ART"
   else
-    ui "- ART 已是內建等效版本"
-    update_description "[安裝正常] ART session guard 將以 monitor-only 模式啟動。"
+    ui "- 狀態1：ART 未更新"
+    update_description "[狀態1] ART 未更新。Active=$active_ver Factory=$factory_ver。"
     log "[正常] ART 已是內建等效版本"
   fi
 

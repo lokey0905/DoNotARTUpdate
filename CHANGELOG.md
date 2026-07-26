@@ -6,6 +6,7 @@
 - 每 30 秒查詢 ready parent session，並每 5 分鐘完整掃描包含 ART 的 Mainline train。
 - 測試版預設為 monitor-only；建立 `enable_session_abandon` 後才會取消父層 train。
 - 不再停用 modulemetadata overlay，並等待 PackageManager 實際可用後再查詢。
+- 新增 ART 未更新、等待重開機套用、已安裝更新三態判斷，歷史 applied session 不會誤判目前 Active 狀態。
 
 ## 2.1.2
 

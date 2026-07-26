@@ -31,6 +31,16 @@
 
 取消父層 Mainline train 會同時取消該 train 內的其他模組，不是只移除 ART child session。
 
+## 三種狀態
+
+| 狀態 | 判斷條件 | 處理 |
+|---|---|---|
+| 狀態 1：ART 未更新 | Active 是 Factory，且沒有未終止的 ART staged session | 保持監控 |
+| 狀態 2：等待重開機套用 | ART parent session 為 `applied=false`、`failed=false`、`destroyed=false`；`ready=true` 代表已可在下次重開機套用 | monitor-only 記錄；啟用 abandon 後取消父層 train |
+| 狀態 3：已安裝 ART 更新 | Active `IsFactory=false`，或 Active 版本高於 Factory | 不直接刪除 active APEX，只警告並繼續攔截後續更新 |
+
+`applied=true` 的歷史 ART session 不會單獨觸發狀態 3；仍以目前 Active / Factory APEX 為準。狀態 3 之後若又出現新 pending train，description 會顯示 `狀態3+2`。
+
 ## 功能
 
 - 安裝時與開機後檢查 ART Active / Factory 版本
@@ -43,9 +53,10 @@
 - 透過 `module.prop` description 顯示狀態，例如：
 
 ```text
-[正常] ART session guard 監控中。Active=331813010 Factory=331813010。
-[偵測] ART Mainline staged train。Session=123456 Ready=true Mode=monitor。
-[處理] 已送出 ART Mainline train 取消請求。Session=123456。
+[狀態1] ART 未更新。Active=331813010 Factory=331813010。
+[狀態2] ART 更新已就緒，等待重開機套用。Session=123456。
+[狀態3] 已安裝新版 ART。Active=361501120 Factory=331813010。
+[狀態3+2] 已安裝新版 ART，另有待套用更新。Session=123456 Ready=true。
 [略過] Android 11/API 30 低於 Android 12，不處理 ART。
 [錯誤] Android 13/API 33 未檢測到 ART APEX，請檢查 ROM dumpsys。
 ```
@@ -91,6 +102,7 @@ Active version == Factory version
 cmd package list staged-sessions --only-parent
 cmd package list staged-sessions --only-ready --only-parent
 sh /data/adb/modules/DoNotARTUpdate/service.sh --check-sessions
+sh /data/adb/modules/DoNotARTUpdate/service.sh --check-state
 ```
 
 查看模組 log：
@@ -105,6 +117,7 @@ cat /data/adb/modules/DoNotARTUpdate/gpsu_art_guard.log
 |---|---|
 | `enable_session_abandon` | 取消偵測到的 ART 父層 staged train；測試版預設不存在 |
 | `disable_session_guard` | 暫停 staged session 查詢與處理 |
+| `art_staged_update_detected` | 狀態 2；內容為 `sessionId|ready|count` |
 | `art_update_detected` | Active ART 已高於 Factory ART |
 
 啟用 staged train 取消：

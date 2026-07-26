@@ -2,6 +2,7 @@
 
 MODDIR=${0%/*}
 LOG="$MODDIR/gpsu_art_guard.log"
+active_updated=0
 
 log() {
   echo "[action] $(date '+%F %T') $*" >> "$LOG"
@@ -115,6 +116,35 @@ get_active_art_path() {
     | head -n 1
 }
 
+get_active_art_is_factory() {
+  get_art_dumpsys \
+    | awk '
+        /Active APEX packages:/ {
+          active_section = 1
+          next
+        }
+
+        /Inactive APEX packages:/ {
+          active_section = 0
+        }
+
+        active_section && $1 == "IsFactory:" {
+          print $2
+          exit
+        }
+
+        active_section {
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^isFactory=/) {
+              split($i, value, "=")
+              print value[2]
+              exit
+            }
+          }
+        }
+      '
+}
+
 get_factory_art_path() {
   get_art_dumpsys \
     | sed -n '/Factory APEX packages:/,$p' \
@@ -148,6 +178,7 @@ check_art_now() {
   factory_path="$(get_factory_art_path)"
   active_ver="$(get_active_art_version)"
   factory_ver="$(get_factory_art_version)"
+  active_is_factory="$(get_active_art_is_factory)"
 
   print_line "[ART] Active path=$active_path"
   print_line "[ART] Factory path=$factory_path"
@@ -164,13 +195,33 @@ check_art_now() {
     return
   fi
 
-  if [ "$active_ver" -gt "$factory_ver" ]; then
-    print_line "[警告] 偵測到新版 ART。"
+  active_updated=0
+
+  case "$active_is_factory" in
+    false)
+      active_updated=1
+      ;;
+    true)
+      active_updated=0
+      ;;
+    *)
+      if [ "$active_ver" -gt "$factory_ver" ]; then
+        active_updated=1
+      elif [ "$active_path" != "$factory_path" ]; then
+        case "$active_path" in
+          /data/apex/active/*) active_updated=1 ;;
+        esac
+      fi
+      ;;
+  esac
+
+  if [ "$active_updated" -eq 1 ]; then
+    print_line "[狀態3] 已安裝新版 ART。"
     print_line "[提示] session guard 不會直接刪除已啟用的 ART APEX。"
-    update_description "[警告] 已啟用新版 ART，不直接刪 APEX。Active=$active_ver Factory=$factory_ver。"
+    update_description "[狀態3] 已安裝新版 ART。Active=$active_ver Factory=$factory_ver。"
   else
-    print_line "[正常] ART 已是內建等效版本。"
-    update_description "[正常] ART session guard 監控中。Active=$active_ver Factory=$factory_ver。"
+    print_line "[狀態1] ART 未更新。"
+    update_description "[狀態1] ART 未更新。Active=$active_ver Factory=$factory_ver。"
   fi
 
   print_line "==============================="
@@ -178,4 +229,13 @@ check_art_now() {
 
 check_art_now
 print_line "[SESSION] PackageInstaller ART staged session 檢查："
-"$MODDIR/service.sh" --check-sessions
+session_output="$("$MODDIR/service.sh" --check-sessions)"
+printf '%s\n' "$session_output"
+
+if printf '%s\n' "$session_output" | grep -q '\[狀態2\]'; then
+  if [ "$active_updated" -eq 1 ]; then
+    update_description "[狀態3+2] 已安裝新版 ART，另有待套用 ART 更新。"
+  else
+    update_description "[狀態2] ART 更新等待重開機套用。"
+  fi
+fi

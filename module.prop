@@ -4,4 +4,4 @@ version=v2.2.0-test1
 versionCode=220
 author=lokey0905
 updateJson=https://raw.githubusercontent.com/lokey0905/donnotARTUpdate/main/update.json
-description=[偵測] ART Mainline staged train。Session=100 Ready=true Mode=monitor。
+description=[TEST] ART three-state session guard monitor-only.

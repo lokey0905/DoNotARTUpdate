@@ -4,6 +4,7 @@ MODDIR=${0%/*}
 LOG="$MODDIR/gpsu_art_guard.log"
 
 ART_UPDATED_MARKER="$MODDIR/art_update_detected"
+ART_STAGED_MARKER="$MODDIR/art_staged_update_detected"
 ENABLE_SESSION_ABANDON_MARKER="$MODDIR/enable_session_abandon"
 DISABLE_SESSION_GUARD_MARKER="$MODDIR/disable_session_guard"
 SESSION_POLL_SECONDS=30
@@ -11,6 +12,15 @@ SESSION_FULL_SCAN_CYCLES=10
 SESSION_TEST_MODE=0
 SESSION_GUARD_DUMPSYS_FILE="${SESSION_GUARD_DUMPSYS_FILE:-}"
 SESSION_ABANDON_REQUESTED_IDS=""
+ART_ACTIVE_STATE="unknown"
+ART_ACTIVE_VERSION=""
+ART_FACTORY_VERSION=""
+ART_ACTIVE_IS_FACTORY=""
+ART_PENDING_FOUND=0
+ART_PENDING_SESSION_ID=""
+ART_PENDING_READY=""
+ART_PENDING_SESSION_COUNT=0
+ART_GUARD_ACTION="none"
 
 log() {
   entry="[service] $(date '+%F %T') $*"
@@ -51,6 +61,7 @@ update_description() {
   desc="$1"
   tmp="$MODDIR/module.prop.tmp"
 
+  [ "$SESSION_TEST_MODE" -eq 1 ] && return
   [ -f "$MODDIR/module.prop" ] || return
 
   grep -v '^description=' "$MODDIR/module.prop" > "$tmp" 2>/dev/null
@@ -84,16 +95,6 @@ is_android_below_12() {
   esac
 
   [ "$sdk" -lt 31 ]
-}
-
-is_android_12_or_newer() {
-  sdk="$(get_android_sdk)"
-
-  case "$sdk" in
-    ''|*[!0-9]*) return 1 ;;
-  esac
-
-  [ "$sdk" -ge 31 ]
 }
 
 wait_boot_completed() {
@@ -244,6 +245,60 @@ get_session_record() {
     | awk -F '|' -v target="$target_id" '$1 == target { print; exit }'
 }
 
+update_guard_description() {
+  [ "$SESSION_TEST_MODE" -eq 1 ] && return
+
+  if [ "$ART_ACTIVE_STATE" = "updated" ]; then
+    if [ "$ART_PENDING_FOUND" -eq 1 ]; then
+      case "$ART_GUARD_ACTION" in
+        abandon_requested)
+          update_description "[處理] 狀態3+2，後續 ART 更新取消請求已送出。Session=$ART_PENDING_SESSION_ID。"
+          ;;
+        abandon_failed)
+          update_description "[錯誤] 狀態3+2，後續 ART 更新取消失敗。Session=$ART_PENDING_SESSION_ID。"
+          ;;
+        *)
+          update_description "[狀態3+2] 已安裝新版 ART，另有待套用更新。Session=$ART_PENDING_SESSION_ID Ready=$ART_PENDING_READY。"
+          ;;
+      esac
+    else
+      update_description "[狀態3] 已安裝新版 ART。Active=$ART_ACTIVE_VERSION Factory=$ART_FACTORY_VERSION。"
+    fi
+    return
+  fi
+
+  if [ "$ART_PENDING_FOUND" -eq 1 ]; then
+    case "$ART_GUARD_ACTION" in
+      abandon_requested)
+        update_description "[處理] 狀態2 ART 更新取消請求已送出。Session=$ART_PENDING_SESSION_ID。"
+        ;;
+      abandon_failed)
+        update_description "[錯誤] 狀態2 ART 更新取消失敗。Session=$ART_PENDING_SESSION_ID。"
+        ;;
+      *)
+        if [ "$ART_PENDING_READY" = "true" ]; then
+          update_description "[狀態2] ART 更新已就緒，等待重開機套用。Session=$ART_PENDING_SESSION_ID。"
+        else
+          update_description "[狀態2] ART 更新交易處理中，尚未就緒。Session=$ART_PENDING_SESSION_ID。"
+        fi
+        ;;
+    esac
+    return
+  fi
+
+  case "$ART_ACTIVE_STATE" in
+    factory)
+      update_description "[狀態1] ART 未更新。Active=$ART_ACTIVE_VERSION Factory=$ART_FACTORY_VERSION。"
+      ;;
+    missing)
+      update_description "[錯誤] Android 12+ 未檢測到 ART APEX。"
+      ;;
+    *)
+      update_description "[警告] 無法判斷 ART Active/Factory 狀態，session guard 仍在監控。"
+      ;;
+  esac
+}
+
 session_guard_mode() {
   if [ -f "$ENABLE_SESSION_ABANDON_MARKER" ]; then
     echo "abandon"
@@ -265,18 +320,24 @@ abandon_art_parent_session() {
 
   if [ "$rc" -eq 0 ]; then
     SESSION_ABANDON_REQUESTED_IDS="$SESSION_ABANDON_REQUESTED_IDS $parent_id"
+    ART_GUARD_ACTION="abandon_requested"
     log "[SESSION] 已送出取消請求: parent=$parent_id"
-    update_description "[處理] 已送出 ART Mainline train 取消請求。Session=$parent_id。"
     return 0
   fi
 
+  ART_GUARD_ACTION="abandon_failed"
   log "[錯誤] 無法取消 ART staged train: parent=$parent_id rc=$rc"
-  update_description "[錯誤] 偵測到 ART staged train，但取消失敗。Session=$parent_id。"
   return 1
 }
 
 check_art_staged_sessions() {
   mode="$1"
+
+  ART_PENDING_FOUND=0
+  ART_PENDING_SESSION_ID=""
+  ART_PENDING_READY=""
+  ART_PENDING_SESSION_COUNT=0
+  ART_GUARD_ACTION="none"
 
   if [ "$SESSION_TEST_MODE" -ne 1 ]; then
     package_probe="$(pm path android 2>&1)"
@@ -289,7 +350,13 @@ check_art_staged_sessions() {
   records="$(get_staged_session_records)"
   art_parent_ids="$(get_art_parent_session_ids "$records")"
 
-  [ -n "$art_parent_ids" ] || return 0
+  if [ -z "$art_parent_ids" ]; then
+    if [ "$SESSION_TEST_MODE" -ne 1 ]; then
+      rm -f "$ART_STAGED_MARKER"
+    fi
+    update_guard_description
+    return 0
+  fi
 
   for parent_id in $art_parent_ids; do
     record="$(get_session_record "$records" "$parent_id")"
@@ -310,12 +377,17 @@ EOF
     [ "$is_failed" = "true" ] && continue
     [ "$is_destroyed" = "true" ] && continue
 
-    log "[SESSION] 偵測到 ART staged train: parent=$session_id ready=$is_ready mode=$mode"
-    update_description "[偵測] ART Mainline staged train。Session=$session_id Ready=$is_ready Mode=$mode。"
+    ART_PENDING_FOUND=1
+    ART_PENDING_SESSION_ID="$session_id"
+    ART_PENDING_READY="$is_ready"
+    ART_PENDING_SESSION_COUNT=$((ART_PENDING_SESSION_COUNT + 1))
+
+    log "[狀態2] 偵測到 ART staged train: parent=$session_id ready=$is_ready mode=$mode"
 
     if [ "$mode" = "abandon" ]; then
       case " $SESSION_ABANDON_REQUESTED_IDS " in
         *" $session_id "*)
+          ART_GUARD_ACTION="abandon_requested"
           log "[SESSION] 已送出取消請求，等待 PackageInstaller 完成: parent=$session_id"
           ;;
         *)
@@ -326,6 +398,18 @@ EOF
       log "[SESSION] monitor-only，未取消 parent=$session_id"
     fi
   done
+
+  if [ "$SESSION_TEST_MODE" -ne 1 ]; then
+    if [ "$ART_PENDING_FOUND" -eq 1 ]; then
+      printf '%s|%s|%s\n' \
+        "$ART_PENDING_SESSION_ID" "$ART_PENDING_READY" "$ART_PENDING_SESSION_COUNT" \
+        > "$ART_STAGED_MARKER"
+    else
+      rm -f "$ART_STAGED_MARKER"
+    fi
+  fi
+
+  update_guard_description
 }
 
 monitor_art_staged_sessions() {
@@ -360,6 +444,11 @@ monitor_art_staged_sessions() {
 }
 
 get_art_dumpsys() {
+  if [ -n "$SESSION_GUARD_DUMPSYS_FILE" ] && [ -f "$SESSION_GUARD_DUMPSYS_FILE" ]; then
+    cat "$SESSION_GUARD_DUMPSYS_FILE"
+    return
+  fi
+
   dumpsys package com.google.android.art 2>/dev/null
   dumpsys package com.android.art 2>/dev/null
 }
@@ -372,25 +461,6 @@ has_art_apex() {
   fi
 
   return 1
-}
-
-handle_missing_art_apex() {
-  label="$(android_label)"
-
-  if is_android_below_12; then
-    log "[略過] $label 低於 Android 12，不處理 ART Mainline。"
-    update_description "[略過] $label 低於 Android 12，不處理 ART。"
-    return
-  fi
-
-  if is_android_12_or_newer; then
-    log "[錯誤] $label 應有 ART APEX，但未檢測到 com.google.android.art/com.android.art。"
-    update_description "[錯誤] $label 未檢測到 ART APEX，請檢查 ROM dumpsys。"
-    return
-  fi
-
-  log "[錯誤] 無法判斷 Android 版本，且未檢測到 ART APEX。"
-  update_description "[錯誤] 未檢測到 ART APEX，且無法判斷 Android 版本。"
 }
 
 get_active_art_version() {
@@ -418,30 +488,40 @@ get_active_art_path() {
     | head -n 1
 }
 
+get_active_art_is_factory() {
+  get_art_dumpsys \
+    | awk '
+        /Active APEX packages:/ {
+          active_section = 1
+          next
+        }
+
+        /Inactive APEX packages:/ {
+          active_section = 0
+        }
+
+        active_section && $1 == "IsFactory:" {
+          print $2
+          exit
+        }
+
+        active_section {
+          for (i = 1; i <= NF; i++) {
+            if ($i ~ /^isFactory=/) {
+              split($i, value, "=")
+              print value[2]
+              exit
+            }
+          }
+        }
+      '
+}
+
 get_factory_art_path() {
   get_art_dumpsys \
     | sed -n '/Factory APEX packages:/,$p' \
     | sed -n 's/^[[:space:]]*Path: //p' \
     | head -n 1
-}
-
-is_art_updated_version() {
-  active_ver="$(get_active_art_version)"
-  factory_ver="$(get_factory_art_version)"
-
-  log "[ART] Active versionCode=$active_ver"
-  log "[ART] Factory versionCode=$factory_ver"
-
-  if [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then
-    log "[警告] 無法解析 ART versionCode"
-    return 1
-  fi
-
-  if [ "$active_ver" -gt "$factory_ver" ]; then
-    return 0
-  fi
-
-  return 1
 }
 
 log_art_status() {
@@ -465,31 +545,72 @@ log_art_status() {
 }
 
 report_active_art_state() {
+  ART_ACTIVE_STATE="unknown"
+  ART_ACTIVE_VERSION=""
+  ART_FACTORY_VERSION=""
+  ART_ACTIVE_IS_FACTORY=""
+
   if ! has_art_apex; then
-    handle_missing_art_apex
+    ART_ACTIVE_STATE="missing"
+    log "[錯誤] 未檢測到 ART Factory APEX"
     return
   fi
 
-  active_ver="$(get_active_art_version)"
-  factory_ver="$(get_factory_art_version)"
+  ART_ACTIVE_VERSION="$(get_active_art_version)"
+  ART_FACTORY_VERSION="$(get_factory_art_version)"
+  ART_ACTIVE_IS_FACTORY="$(get_active_art_is_factory)"
+  active_path="$(get_active_art_path)"
+  factory_path="$(get_factory_art_path)"
 
-  if [ -z "$active_ver" ] || [ -z "$factory_ver" ]; then
+  if [ -z "$ART_ACTIVE_VERSION" ] || [ -z "$ART_FACTORY_VERSION" ]; then
     log "[警告] 無法解析 ART 版本，session guard 仍會繼續監控"
-    update_description "[警告] 無法解析 ART 版本，ART session guard 仍在監控。"
     return
   fi
 
-  if is_art_updated_version; then
-    touch "$ART_UPDATED_MARKER"
-    log "[警告] 已啟用的 ART 高於 Factory；session guard 不會直接刪除 active APEX"
-    update_description "[警告] 已啟用新版 ART，不直接刪 APEX。Active=$active_ver Factory=$factory_ver。"
-    return
-  fi
+  case "$ART_ACTIVE_IS_FACTORY" in
+    false)
+      ART_ACTIVE_STATE="updated"
+      ;;
+    true)
+      ART_ACTIVE_STATE="factory"
+      ;;
+    *)
+      if [ "$ART_ACTIVE_VERSION" -gt "$ART_FACTORY_VERSION" ]; then
+        ART_ACTIVE_STATE="updated"
+      elif [ "$active_path" != "$factory_path" ]; then
+        case "$active_path" in
+          /data/apex/active/*)
+            ART_ACTIVE_STATE="updated"
+            ;;
+          *)
+            ART_ACTIVE_STATE="factory"
+            ;;
+        esac
+      else
+        ART_ACTIVE_STATE="factory"
+      fi
+      ;;
+  esac
 
-  rm -f "$ART_UPDATED_MARKER"
-  log "[正常] Active ART 不高於 Factory ART"
-  update_description "[正常] ART session guard 監控中。Active=$active_ver Factory=$factory_ver。"
+  if [ "$ART_ACTIVE_STATE" = "updated" ]; then
+    if [ "$SESSION_TEST_MODE" -ne 1 ]; then
+      touch "$ART_UPDATED_MARKER"
+    fi
+    log "[狀態3] 已安裝新版 ART。Active=$ART_ACTIVE_VERSION Factory=$ART_FACTORY_VERSION IsFactory=$ART_ACTIVE_IS_FACTORY"
+  else
+    if [ "$SESSION_TEST_MODE" -ne 1 ]; then
+      rm -f "$ART_UPDATED_MARKER"
+    fi
+    log "[狀態1] ART 未更新。Active=$ART_ACTIVE_VERSION Factory=$ART_FACTORY_VERSION IsFactory=$ART_ACTIVE_IS_FACTORY"
+  fi
 }
+
+if [ "$1" = "--check-state" ]; then
+  SESSION_TEST_MODE=1
+  report_active_art_state
+  check_art_staged_sessions "monitor"
+  exit $?
+fi
 
 if [ "$1" = "--check-sessions" ]; then
   SESSION_TEST_MODE=1

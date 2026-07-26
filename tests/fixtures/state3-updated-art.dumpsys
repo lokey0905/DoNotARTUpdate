@@ -1,0 +1,27 @@
+Active install sessions:
+
+  Session 300:
+    appPackageName=mainline_train_primary isMultiPackage=true isStaged=true
+    params.isMultiPackage=true params.isStaged=true mParentSessionId=-1
+    mStagedSessionApplied=true mStagedSessionFailed=false mStagedSessionReady=false
+
+  Session 301:
+    appPackageName=com.google.android.art isMultiPackage=false isStaged=true
+    params.isMultiPackage=false params.isStaged=true mParentSessionId=300
+    mStagedSessionApplied=false mStagedSessionFailed=false mStagedSessionReady=false
+
+  Historical install sessions:
+
+Active APEX packages:
+  com.google.android.art
+    Version: 340000000
+    Path: /data/apex/active/com.google.android.art@340000000.apex
+    IsActive: true
+    IsFactory: false
+Inactive APEX packages:
+Factory APEX packages:
+  com.google.android.art
+    Version: 330443060
+    Path: /system/apex/com.google.android.art.apex
+    IsActive: false
+    IsFactory: true
