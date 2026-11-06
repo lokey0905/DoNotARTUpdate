@@ -1,3 +1,5 @@
 *.zip
 .codex-remote-attachments/
+.serena/
 diagnostics/
+device_repair_evidence/
