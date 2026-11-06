@@ -3,7 +3,8 @@
 Magisk / KernelSU / APatch 模組，目標是降低 ART Mainline 更新造成 LSPosed、Zygisk 或其他 runtime hook 不相容的風險。
 
 > [!CAUTION]
-> `v2.2.0-test2` 是實驗分支。Samsung A55 / Android 14 已驗證待更新攔截、重開機自啟動、一般 Action 顯示，以及 ART 372042720 經系統解除後回復原廠 341411300；手動刪檔及其他機型仍未完成實機驗證。
+> `v2.2.0` 已在 Samsung A55 / Android 14 驗證待更新攔截、重開機自啟動、一般 Action 顯示，以及 ART 372042720 經系統解除後回復原廠 341411300；Note20 / Android 13 已驗證大型多套件交易解析與 ART 待更新攔截。
+> 手動刪檔備援及其他 ROM 的相容性仍未完成全面實機驗證。
 > 預設會取消包含 ART 的更新交易，並在檢查通過後嘗試解除已套用的 ART 更新。
 > 取消父交易也會取消同批其他 Mainline 更新，包含安全修補；還原 ART 不保證修復所有 hook 問題，也可能造成 bootloop。
 > 安裝前應備份資料，並確認 recovery 救援方式。不建議直接部署到唯一的日用手機。
@@ -93,7 +94,7 @@ Action 先顯示 ART 狀態、目前／出廠版本、本次開機成功取消�
 | `disable_auto_restore` | 仍取消待套用交易，但不自動解除已套用更新 |
 
 管理器的 `disable` / `remove` 旗標也會阻止已在執行的腳本繼續寫入。
-升級時保留上述三個偏好檔。舊測試版的 `enable_session_abandon` 已不需要，**新測試版預設為啟用處理**；要保留舊版只觀察行為，升級前先建立 `monitor_only`。
+升級時保留上述三個偏好檔。舊測試版的 `enable_session_abandon` 已不需要，**2.2.0 預設為啟用處理**；要保留舊版只觀察行為，升級前先建立 `monitor_only`。
 
 ## 紀錄與備份
 
@@ -139,12 +140,13 @@ bash tests/test-guard.sh
 ```
 
 第二組測試的 PackageManager、boot ID、Android 屬性與按鍵確認均由 mock 提供；檔案操作只發生在新建的隔離目錄。
-通過不代表已驗證實機套用、回復、按鍵輸入或重開機相容性。正式發布前仍需在可救援的測試機上驗證三種狀態及失敗路徑。
+98 項隔離回歸測試已通過，使用者另回報三台裝置測試未發現問題。自動測試與既有裝置結果不代表所有 ROM 均相容；其他裝置仍應在可救援的條件下驗證三種狀態及失敗路徑。
 
 ## 線上更新與版本
 
-此分支模組版本為 `v2.2.0-test2` / `versionCode=221`。
-穩定頻道的 `update.json` 保持 `2.1.2`，不把未完成實機驗證的測試版推送到正式更新頻道。
+目前正式版為 `v2.2.0` / `versionCode=222`，高於 2.1.2 與 2.2.0 測試版。
+`module.prop` 的 `updateJson` 指向 GitHub `main/update.json`，供 Magisk 等支援此格式的管理器檢查更新。更新設定提供版本、Release ZIP 與變更紀錄連結，不會由模組自行下載安裝。
+正式版 ZIP 發布於 [GitHub Releases](https://github.com/lokey0905/DoNotARTUpdate/releases)，資產名稱為 `DoNotARTUpdate.zip`。
 打包時必須包含 `lib/`；它是所有入口共用的必要程式。
 
 ## 設計依據
