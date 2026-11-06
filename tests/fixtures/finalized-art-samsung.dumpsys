@@ -1,0 +1,33 @@
+Active install sessions:
+
+Finalized install sessions:
+  Finalized Session 100:
+    appPackageName=mainline_train_primary
+    params.isMultiPackage=true params.isStaged=true mParentSessionId=-1
+    mCommitted=true mDestroyed=false mChildSessionIds=[101]
+    mSessionApplied=true mSessionFailed=false mSessionReady=false
+    Finalized Child Session 101:
+      appPackageName=com.google.android.art
+      params.isMultiPackage=false params.isStaged=true mParentSessionId=100
+      mCommitted=true mDestroyed=false mChildSessionIds=[]
+      mSessionApplied=false mSessionFailed=false mSessionReady=false
+
+Historical install sessions:
+
+Legacy install sessions:
+  {}
+
+APEX session state:
+Active APEX packages:
+  com.google.android.art
+    Version: 341411300
+    Path: /data/apex/decompressed/com.android.art@341411300.decompressed.apex
+    IsActive: true
+    IsFactory: true
+Inactive APEX packages:
+Factory APEX packages:
+  com.google.android.art
+    Version: 341411300
+    Path: /data/apex/decompressed/com.android.art@341411300.decompressed.apex
+    IsActive: true
+    IsFactory: true

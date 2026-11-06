@@ -3,11 +3,13 @@ Active install sessions:
   Session 200:
     appPackageName=mainline_train_primary isMultiPackage=true isStaged=true
     params.isMultiPackage=true params.isStaged=true mParentSessionId=-1
+    mCommitted=true mDestroyed=false mChildSessionIds=[201]
     mStagedSessionApplied=false mStagedSessionFailed=false mStagedSessionReady=true
 
   Session 201:
     appPackageName=com.google.android.media isMultiPackage=false isStaged=true
     params.isMultiPackage=false params.isStaged=true mParentSessionId=200
+    mCommitted=true mDestroyed=false mChildSessionIds=[]
     mStagedSessionApplied=false mStagedSessionFailed=false mStagedSessionReady=false
 
   Historical install sessions:

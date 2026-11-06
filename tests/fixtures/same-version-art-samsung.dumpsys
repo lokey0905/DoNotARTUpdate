@@ -1,0 +1,21 @@
+Active install sessions:
+
+Finalized install sessions:
+
+Historical install sessions:
+
+APEX session state:
+
+Active APEX packages:
+  com.google.android.art
+    Version: 341411300
+    Path: /data/apex/active/com.android.art@341411300.apex
+    IsActive: true
+    IsFactory: false
+Inactive APEX packages:
+Factory APEX packages:
+  com.google.android.art
+    Version: 341411300
+    Path: /system/apex/com.google.android.art_compressed.apex
+    IsActive: false
+    IsFactory: true

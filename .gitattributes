@@ -1,6 +1,8 @@
 .gitattributes text eol=lf
 .gitignore text eol=lf
 *.sh text eol=lf
+*.awk text eol=lf
+*.dumpsys text eol=lf
 *.md text eol=lf
 *.json text eol=lf
 module.prop text eol=lf
