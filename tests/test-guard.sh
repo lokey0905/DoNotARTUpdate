@@ -241,6 +241,181 @@ query_failure() {
   expect_fail guard_cycle
   [ ! -s "$CASE_DIR/calls" ]
 }
+startup_query_threshold() {
+  G_STARTUP_WAIT=1
+  QUERY_FAIL=1
+  local attempt
+  for attempt in 1 2 3 4; do
+    expect_fail guard_cycle
+    if [ "$attempt" -lt 3 ]; then
+      grep -q "\[等待系統服務\].*30 秒後重試（$attempt/3）" "$G_MODULE/module.prop"
+    else
+      grep -q '\[無法確認狀態\]' "$G_MODULE/module.prop"
+      assert_eq "$G_STARTUP_WAIT" 0
+    fi
+  done
+  assert_eq "$G_STARTUP_FAILURES" 3
+  [ ! -s "$CASE_DIR/calls" ]
+  [ ! -e "$G_STATE/restore.state" ]
+}
+startup_query_recovery() {
+  G_STARTUP_WAIT=1
+  QUERY_FAIL=1
+  expect_fail guard_cycle
+  QUERY_FAIL=0
+  SNAPSHOT="$CASE_DIR/factory"
+  guard_cycle
+  assert_eq "$G_STARTUP_WAIT" 0
+  assert_eq "$G_STARTUP_FAILURES" 0
+  grep -q '\[監控中\]' "$G_MODULE/module.prop"
+  # Later failures must not get a new startup grace period.
+  QUERY_FAIL=1
+  expect_fail guard_cycle
+  grep -q '\[無法確認狀態\]' "$G_MODULE/module.prop"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+startup_parse_immediate() {
+  G_STARTUP_WAIT=1
+  sed 's/appPackageName=com.google.android.art/appPackageName=null/' "$CASE_DIR/pending" > "$CASE_DIR/bad"
+  SNAPSHOT="$CASE_DIR/bad"
+  expect_fail guard_cycle
+  assert_eq "$G_SCAN_ERROR" parse
+  assert_eq "$G_STARTUP_WAIT" 0
+  grep -q '\[無法確認狀態\].*解析失敗' "$G_MODULE/module.prop"
+  [ ! -e "$G_STATE/query-error.log" ]
+  QUERY_FAIL=1
+  expect_fail guard_cycle
+  grep -q '\[無法確認狀態\]' "$G_MODULE/module.prop"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+startup_other_immediate() {
+  G_STARTUP_WAIT=1
+  guard_prepare_work() { guard_error 'synthetic temp failure'; return 1; }
+  expect_fail guard_cycle
+  assert_eq "$G_SCAN_ERROR" other
+  assert_eq "$G_STARTUP_WAIT" 0
+  grep -q '\[無法確認狀態\].*synthetic temp failure' "$G_MODULE/module.prop"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+startup_manual_error() {
+  QUERY_FAIL=1
+  expect_fail guard_cycle
+  assert_eq "$G_STARTUP_WAIT" 0
+  grep -q '\[無法確認狀態\]' "$G_MODULE/module.prop"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+query_stderr_recorded() {
+  G_STARTUP_WAIT=1
+  guard_dump() { cat "$CASE_DIR/pending"; printf 'SecurityException: synthetic denial\n' >&2; }
+  expect_fail guard_cycle
+  assert_eq "$G_SCAN_ERROR" query
+  grep -q '\[等待系統服務\]' "$G_MODULE/module.prop"
+  grep -qx 'exit_code=0' "$G_STATE/query-error.log"
+  grep -qx 'SecurityException: synthetic denial' "$G_STATE/query-error.log"
+  grep -qx 'boot=boot-1' "$G_STATE/query-error.log"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+query_stdout_recorded() {
+  G_STARTUP_WAIT=1
+  guard_dump() { printf "*** SERVICE 'package' DUMP TIMEOUT (25000ms) EXPIRED ***\n"; }
+  expect_fail guard_cycle
+  assert_eq "$G_SCAN_ERROR" query
+  grep -q '\[等待系統服務\]' "$G_MODULE/module.prop"
+  grep -Fq "*** SERVICE 'package' DUMP TIMEOUT (25000ms) EXPIRED ***" "$G_STATE/query-error.log"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+query_readonly_no_record() {
+  printf 'previous diagnostic\n' > "$G_STATE/query-error.log"
+  cp "$G_MODULE/module.prop" "$CASE_DIR/prop-before"
+  G_READONLY=1
+  QUERY_FAIL=1
+  expect_fail guard_scan
+  assert_eq "$(cat "$G_STATE/query-error.log")" 'previous diagnostic'
+  cmp "$G_MODULE/module.prop" "$CASE_DIR/prop-before"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+query_log_bounded() {
+  guard_dump() { head -c 40000 /dev/zero | tr '\000' x >&2; return 124; }
+  expect_fail guard_cycle
+  grep -qx 'exit_code=124' "$G_STATE/query-error.log"
+  [ "$(wc -c < "$G_STATE/query-error.log")" -lt 17000 ]
+  [ ! -s "$CASE_DIR/calls" ]
+}
+query_log_atomic_failure() {
+  printf 'previous diagnostic\n' > "$G_STATE/query-error.log"
+  mv() { case "$*" in *query-error.log*) return 1 ;; *) command mv "$@" ;; esac; }
+  QUERY_FAIL=1
+  expect_fail guard_cycle
+  assert_eq "$(cat "$G_STATE/query-error.log")" 'previous diagnostic'
+  grep -q '無法保存 PackageManager 原始查詢錯誤' "$G_STATE/guard.log"
+  [ "$(find "$G_STATE" -name 'query-error.*' -type f | wc -l | tr -d ' ')" = 1 ]
+  [ ! -s "$CASE_DIR/calls" ]
+}
+query_log_directory() {
+  mkdir "$G_STATE/query-error.log"
+  QUERY_FAIL=1
+  expect_fail guard_cycle
+  [ -z "$(find "$G_STATE/query-error.log" -type f)" ]
+  grep -q '\[無法確認狀態\]' "$G_MODULE/module.prop"
+  [ ! -s "$CASE_DIR/calls" ]
+}
+service_startup_setup() {
+  cp "$ROOT/service.sh" "$G_MODULE/service.sh"
+  mkdir "$G_MODULE/lib"
+  # Exercise the actual service loop with deterministic query results and no adb.
+  cat > "$G_MODULE/lib/art-guard.sh" <<'MOCK'
+. "$TEST_REAL_LIB"
+eval "$(declare -f guard_init | sed '1s/guard_init/guard_init_real/')"
+guard_init() {
+  guard_init_real "$1"
+  G_LIB="${TEST_REAL_LIB%/*}"
+  G_STATE="$TEST_CASE/service-state"
+  G_MODULES="$TEST_CASE/modules"
+  G_UPDATES="$TEST_CASE/updates"
+}
+guard_property() {
+  case "$1" in
+    ro.build.version.sdk) echo 34 ;;
+    ro.apex.updatable) echo true ;;
+    sys.boot_completed) echo 1 ;;
+  esac
+}
+guard_boot_id() { echo boot-service; }
+id() { echo 0; }
+guard_dump() {
+  local n=0
+  [ ! -f "$TEST_CASE/service-count" ] || read -r n < "$TEST_CASE/service-count"
+  n=$((n + 1))
+  printf '%s\n' "$n" > "$TEST_CASE/service-count"
+  if [ "$n" = 4 ]; then cat "$TEST_CASE/factory"; else echo 'synthetic query unavailable' >&2; return 1; fi
+}
+guard_command() { printf '%s\n' "$*" >> "$TEST_CASE/service-calls"; return 1; }
+sleep() {
+  printf '%s\n' "$1" >> "$TEST_CASE/service-sleeps"
+  grep '^description=' "$G_MODULE/module.prop" >> "$TEST_CASE/service-descriptions"
+  [ "$(cat "$TEST_CASE/service-count")" -lt 5 ] || exit 0
+}
+MOCK
+}
+startup_service_loop() {
+  service_startup_setup
+  TEST_REAL_LIB="$ROOT/lib/art-guard.sh" TEST_CASE="$CASE_DIR" bash "$G_MODULE/service.sh"
+  assert_eq "$(cat "$CASE_DIR/service-count")" 5
+  assert_eq "$(wc -l < "$CASE_DIR/service-sleeps" | tr -d ' ')" 5
+  expect_fail grep -qv '^30$' "$CASE_DIR/service-sleeps"
+  assert_eq "$(grep -c '\[等待系統服務\]' "$CASE_DIR/service-descriptions")" 2
+  assert_eq "$(grep -c '\[無法確認狀態\]' "$CASE_DIR/service-descriptions")" 2
+  assert_eq "$(grep -c '\[監控中\]' "$CASE_DIR/service-descriptions")" 1
+  assert_eq "$(cat "$CASE_DIR/service-calls")" 'list staged-sessions --only-ready --only-sessionid --only-parent'
+}
+startup_once_mode() {
+  service_startup_setup
+  expect_fail env TEST_REAL_LIB="$ROOT/lib/art-guard.sh" TEST_CASE="$CASE_DIR" bash "$G_MODULE/service.sh" --once
+  assert_eq "$(cat "$CASE_DIR/service-count")" 1
+  [ ! -e "$CASE_DIR/service-sleeps" ]
+  [ ! -e "$CASE_DIR/service-calls" ]
+  grep -q '\[無法確認狀態\]' "$G_MODULE/module.prop"
+}
 truncated_dump() {
   sed '/Historical install sessions:/d' "$CASE_DIR/updated" > "$CASE_DIR/bad"
   SNAPSHOT="$CASE_DIR/bad"
@@ -972,6 +1147,19 @@ run 'draft child list still requires complete topology' draft_bad_link
 run 'draft committed flag must be explicit' draft_unknown_committed
 run 'draft ready flag must be explicit' draft_unknown_ready
 run 'query error never means empty' query_failure
+run 'startup query grace ends on the third failure' startup_query_threshold
+run 'successful scan ends grace permanently' startup_query_recovery
+run 'startup parse errors remain immediate and end grace' startup_parse_immediate
+run 'startup local errors are never masked as service readiness' startup_other_immediate
+run 'non-service callers do not enable startup grace' startup_manual_error
+run 'stderr query error is retained even with exit zero' query_stderr_recorded
+run 'stdout timeout is a query error even on truncated output' query_stdout_recorded
+run 'read-only query failure cannot overwrite diagnostics' query_readonly_no_record
+run 'raw query diagnostics are bounded and retain exit code' query_log_bounded
+run 'failed diagnostic replacement preserves prior record and fails closed' query_log_atomic_failure
+run 'diagnostic destination directory is not overwritten' query_log_directory
+run 'actual service loop retries at 30 seconds and recovers' startup_service_loop
+run 'actual once entry point reports failure without waiting' startup_once_mode
 run 'truncated dump rejected' truncated_dump
 run 'finalized Samsung ART trains are not pending' finalized_sessions
 run 'finalized boundary preserves active train' finalized_with_pending

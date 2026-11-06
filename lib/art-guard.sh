@@ -16,6 +16,10 @@ guard_init() {
   G_WORK=''
   G_ERROR=''
   G_BOOT=''
+  G_STARTUP_WAIT=0
+  G_STARTUP_FAILURES=0
+  G_SCAN_ERROR=''
+  G_QUERY_RC=0
 }
 
 guard_error() { G_ERROR="$*"; return 1; }
@@ -207,9 +211,54 @@ guard_dump() {
   fi
 }
 
+guard_record_query_error() {
+  local tmp
+  # Read-only checks must not change persistent diagnostics either.
+  [ "$G_READONLY" = 0 ] && [ -n "$G_LOCK" ] && [ -d "$G_LOCK" ] || return 0
+  [ ! -L "$G_STATE/query-error.log" ] && [ ! -d "$G_STATE/query-error.log" ] || return 1
+  tmp=$(mktemp "$G_STATE/query-error.XXXXXXXX") || return 1
+  if ! {
+    printf 'time=%s\nboot=%s\nexit_code=%s\n' "$(date '+%F %T %z')" "$G_BOOT" "$G_QUERY_RC"
+    printf 'command=timeout 30 dumpsys -t 25 package\n[stderr, first 16 KiB]\n'
+    head -c 16384 "$G_WORK/error"
+    printf '\n[stdout query errors, first 16 KiB]\n'
+    grep -E '^\*\*\* SERVICE .* DUMP TIMEOUT|^Permission Denial:|^Can.t find service:' "$G_WORK/dump" | head -c 16384
+    printf '\n'
+  } > "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! chmod 600 "$tmp" || ! mv -f "$tmp" "$G_STATE/query-error.log"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+guard_query_error() {
+  G_SCAN_ERROR=query
+  guard_error "$1"
+  guard_record_query_error || guard_log '[紀錄警告] 無法保存 PackageManager 原始查詢錯誤。'
+  return 1
+}
+
+guard_scan_failure_description() {
+  if [ "$G_STARTUP_WAIT" = 1 ] && [ "$G_SCAN_ERROR" = query ]; then
+    G_STARTUP_FAILURES=$((G_STARTUP_FAILURES + 1))
+    if [ "$G_STARTUP_FAILURES" -lt 3 ]; then
+      guard_description "[等待系統服務] 尚未取得 ART 狀態，30 秒後重試（$G_STARTUP_FAILURES/3）；未執行 ART 變更"
+      return 0
+    fi
+  fi
+  # A successful scan, a real parse error, or three query failures ends grace.
+  G_STARTUP_WAIT=0
+  guard_description "[無法確認狀態] 未執行 ART 變更：$G_ERROR"
+}
+
 guard_scan() {
   local kind one two three four five six
   G_ERROR=''
+  G_SCAN_ERROR=other
+  G_QUERY_RC=0
   G_PENDING=''
   G_BUSY=''
   G_DRAFTS=0
@@ -217,13 +266,17 @@ guard_scan() {
   G_ART_STATE=unknown
   G_PACKAGE='' G_ACTIVE_VERSION='' G_FACTORY_VERSION='' G_ACTIVE_PATH='' G_FACTORY_PATH=''
   guard_prepare_work || return 1
-  if ! guard_dump > "$G_WORK/dump" 2> "$G_WORK/error"; then
-    guard_error 'PackageManager 查詢失敗或逾時，不能當成沒有更新。'
+  guard_dump > "$G_WORK/dump" 2> "$G_WORK/error" || G_QUERY_RC=$?
+  if [ "$G_QUERY_RC" != 0 ]; then
+    guard_query_error 'PackageManager 查詢失敗或逾時，不能當成沒有更新。'
     return 1
   fi
-  if grep -qiE 'DUMP TIMEOUT|Permission Denial|Can.t find service|Exception' "$G_WORK/error"; then
-    guard_error 'PackageManager 回報查詢錯誤。'; return 1
+  if grep -qiE 'DUMP TIMEOUT|Permission Denial|Can.t find service|Exception' "$G_WORK/error" ||
+     grep -qE '^\*\*\* SERVICE .* DUMP TIMEOUT|^Permission Denial:|^Can.t find service:' "$G_WORK/dump"; then
+    guard_query_error 'PackageManager 回報查詢錯誤。'
+    return 1
   fi
+  G_SCAN_ERROR=parse
   if ! awk -v only_sessions="${1:-0}" -f "$G_LIB/parse-state.awk" "$G_WORK/dump" > "$G_WORK/records"; then
     G_ERROR="解析失敗：$(cat "$G_WORK/records")"
     return 1
@@ -250,6 +303,9 @@ guard_scan() {
     esac
   done < "$G_WORK/records"
   [ -n "$G_BUSY" ] || { guard_error '缺少交易狀態。'; return 1; }
+  G_SCAN_ERROR=''
+  G_STARTUP_WAIT=0
+  G_STARTUP_FAILURES=0
 }
 
 guard_report() {
@@ -541,7 +597,7 @@ guard_fallback_eligible() {
 guard_cycle() {
   local rc
   guard_stats_update || guard_log '[紀錄警告] 無法更新本次開機統計，不影響 ART 保護流程。'
-  guard_scan || { guard_description "[無法確認狀態] 未執行 ART 變更：$G_ERROR"; return 1; }
+  guard_scan || { guard_scan_failure_description; return 1; }
   guard_report
   if guard_paused; then guard_description '[已暫停] 不會取消或移除 ART 更新'; return 0; fi
   if guard_conflicts; then guard_description "[衝突] $G_ERROR"; return 1; fi

@@ -20,7 +20,8 @@ case "${1:-}" in
     printf '[錯誤] %s\n' "$G_ERROR"
     exit 1
     ;;
-  --once|'') ;;
+  --once) ;;
+  '') G_STARTUP_WAIT=1 ;;
   *) printf 'Unknown option: %s\n' "$1"; exit 2 ;;
 esac
 
