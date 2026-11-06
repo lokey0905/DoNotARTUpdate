@@ -1,0 +1,56 @@
+Active install sessions:
+  Active Session 200:
+    appPackageName=com.google.android.tzdata4
+    params.isMultiPackage=true params.isStaged=true mParentSessionId=-1
+    mCommitted=true mDestroyed=false mChildSessionIds=[201]
+    mSessionApplied=false mSessionFailed=false mSessionReady=true
+    Active Child Session 201:
+      appPackageName=com.google.android.tzdata4
+      params.isMultiPackage=false params.isStaged=true mParentSessionId=200
+      mCommitted=true mDestroyed=false mChildSessionIds=[]
+      mSessionApplied=false mSessionFailed=false mSessionReady=false
+  Active Session 100:
+    appPackageName=mainline_train_primary
+    params.isMultiPackage=true params.isStaged=true mParentSessionId=-1
+    mCommitted=true mDestroyed=false
+    mChildSessionIds=[101,
+     102, 10000000
+    01] mSessionApplied=false mSessionFailed=false mSessionReady=true
+    Active Child Session 101:
+      appPackageName=com.google.android.art
+      params.isMultiPackage=false params.isStaged=true mParentSessionId=100
+      mCommitted=true mDestroyed=false mChildSessionIds=[]
+      mSessionApplied=false mSessionFailed=false mSessionReady=false
+    Active Child Session 102:
+      appPackageName=com.google.android.cellbroadcast
+      params.isMultiPackage=false params.isStaged=true mParentSessionId=100
+      mCommitted=true mDestroyed=false mChildSessionIds=[]
+      mSessionApplied=false mSessionFailed=false mSessionReady=false
+    Active Child Session 1000000001:
+      appPackageName=com.google.android.media
+      params.isMultiPackage=false params.isStaged=true mParentSessionId=100
+      mCommitted=true mDestroyed=false mChildSessionIds=[]
+      mSessionApplied=false mSessionFailed=false mSessionReady=false
+
+Finalized install sessions:
+
+Historical install sessions:
+
+APEX session state:
+  Session ID: 100
+    State: STAGED
+  Session ID: 200
+    State: STAGED
+Active APEX packages:
+  com.google.android.art
+    Version: 331711080
+    Path: /data/apex/decompressed/com.android.art@331711080.decompressed.apex
+    IsActive: true
+    IsFactory: true
+Inactive APEX packages:
+Factory APEX packages:
+  com.google.android.art
+    Version: 331711080
+    Path: /data/apex/decompressed/com.android.art@331711080.decompressed.apex
+    IsActive: true
+    IsFactory: true

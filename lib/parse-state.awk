@@ -7,8 +7,52 @@ function field(key, value) {
     if (key in fields && fields[key] != value) fail("conflicting field " key)
     fields[key] = value
 }
+function parse_children(line,    start, chunk, close_at, part, value, n, ids, j, canonical) {
+    if (child_list_open) {
+        chunk = line
+        # IndentingPrintWriter can wrap inside an ID, not just after a comma.
+        sub(/^[ \t]*/, "", chunk)
+    } else {
+        start = index(line, "mChildSessionIds=")
+        if (!start) return
+        chunk = substr(line, start + length("mChildSessionIds="))
+        if (substr(chunk, 1, 1) != "[") { fail("invalid child list " sid); return }
+        chunk = substr(chunk, 2)
+        child_list_open = 1
+        child_list = ""
+    }
+    close_at = index(chunk, "]")
+    part = close_at ? substr(chunk, 1, close_at - 1) : chunk
+    if (part ~ /[^0-9, \t]/) {
+        fail("invalid child list continuation " sid)
+        child_list_open = 0; child_list = ""
+        return
+    }
+    child_list = child_list part
+    if (!close_at) return
+    value = child_list
+    child_list_open = 0; child_list = ""
+    sub(/^[ \t]*/, "", value)
+    sub(/[ \t]*$/, "", value)
+    canonical = ""
+    if (value != "") {
+        n = split(value, ids, ",")
+        for (j = 1; j <= n; j++) {
+            sub(/^[ \t]*/, "", ids[j])
+            sub(/[ \t]*$/, "", ids[j])
+            if (!numeric(ids[j]) || member(canonical, ids[j])) {
+                fail("invalid or duplicate child ID " sid)
+                return
+            }
+            canonical = canonical (j == 1 ? "" : ",") ids[j]
+        }
+    }
+    field("children", canonical)
+}
 function flush_session(    key) {
     if (sid == "") return
+    if (child_list_open) fail("unterminated child list " sid)
+    child_list_open = 0; child_list = ""
     if (sid in staged) fail("duplicate session " sid)
     staged[sid] = fields["staged"]
     pkg[sid] = fields["package"]
@@ -103,12 +147,7 @@ function member(list, id) { return index("," list ",", "," id ",") != 0 }
             if (key == "mStagedSessionFailed" || key == "mSessionFailed") field("failed", value)
             if (key == "mStagedSessionReady" || key == "mSessionReady") field("ready", value)
         }
-        if (match($0, /mChildSessionIds=\[[0-9, ]*\]/)) {
-            value = substr($0, RSTART, RLENGTH)
-            sub(/^mChildSessionIds=\[/, "", value)
-            gsub(/[] ]/, "", value)
-            field("children", value)
-        }
+        parse_children($0)
     }
     if ($0 ~ /^[[:space:]]*(Active|Inactive|Factory) APEX packages:$/) {
         apex_sessions = 0

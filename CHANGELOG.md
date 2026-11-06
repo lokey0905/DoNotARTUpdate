@@ -19,6 +19,7 @@
 
 ### 相容性修正
 
+- 修正 Note20 大型 Mainline 交易的子 ID 清單換行解析，包含數字中途折行；保留分隔符、重複 ID、截斷與父子關係驗證。
 - 支援三星內建 ART 的 `_compressed.apex` 精確檔名；維持系統目錄、路徑、版本與交易安全檢查。
 - 保留與出廠同版本的資料分區 ART 副本，不自動解除或提供刪檔備援，但仍攔截後續更新。版本相同不當成還原內容驗證成功。
 - 支援三星 Active Session / Active Child Session 與 Finalized session 區段，維持父子連結驗證與非 ART 交易排除。

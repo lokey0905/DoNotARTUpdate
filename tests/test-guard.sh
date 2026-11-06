@@ -185,6 +185,44 @@ samsung_broken_child() {
   expect_fail guard_cycle
   [ ! -s "$CASE_DIR/calls" ]
 }
+wrapped_child_sessions() {
+  SNAPSHOT="$ROOT/tests/fixtures/pending-art-wrapped-children.dumpsys"
+  guard_scan
+  assert_eq "$G_ART_STATE" factory
+  assert_eq "$G_PENDING" ' 100'
+  assert_eq "$G_BUSY" 6
+  assert_eq "$G_APEX_SAFE" false
+  guard_cycle
+  assert_eq "$(cat "$CASE_DIR/calls")" 'install-abandon 100'
+}
+wrapped_child_legacy() {
+  sed 's/mSession/mStagedSession/g' "$ROOT/tests/fixtures/pending-art-wrapped-children.dumpsys" > "$CASE_DIR/wrapped"
+  SNAPSHOT="$CASE_DIR/wrapped"
+  guard_scan
+  assert_eq "$G_PENDING" ' 100'
+  assert_eq "$G_BUSY" 6
+}
+wrapped_child_invalid() {
+  local edit="$1"
+  sed "$edit" "$ROOT/tests/fixtures/pending-art-wrapped-children.dumpsys" > "$CASE_DIR/wrapped"
+  SNAPSHOT="$CASE_DIR/wrapped"
+  expect_fail guard_cycle
+  [ ! -s "$CASE_DIR/calls" ]
+}
+wrapped_child_no_comma() { wrapped_child_invalid 's/102, 10000000/102 10000000/'; }
+wrapped_child_bad_token() { wrapped_child_invalid 's/102, 10000000/102, invalid/'; }
+wrapped_child_unclosed() { wrapped_child_invalid 's/01] mSession/01 mSession/'; }
+wrapped_child_wrong_parent() { wrapped_child_invalid 's/mParentSessionId=100/mParentSessionId=999/'; }
+wrapped_child_duplicate() { wrapped_child_invalid 's/102, 10000000/101, 10000000/'; }
+wrapped_child_truncated() {
+  awk '{print} /mChildSessionIds=\[101/ {exit}' "$ROOT/tests/fixtures/pending-art-wrapped-children.dumpsys" > "$CASE_DIR/wrapped"
+  SNAPSHOT="$CASE_DIR/wrapped"
+  expect_fail guard_cycle
+  [ ! -s "$CASE_DIR/calls" ]
+}
+wrapped_child_boundary() {
+  wrapped_child_invalid '/01] mSession/d'
+}
 orphaned_sessions() {
   sed '/Historical install sessions:/i\Orphaned install sessions:' "$CASE_DIR/pending" > "$CASE_DIR/orphan"
   SNAPSHOT="$CASE_DIR/orphan"
@@ -827,6 +865,15 @@ run 'finalized boundary preserves active train' finalized_with_pending
 run 'child session heading supported' child_session_heading
 run 'Samsung active headers select only the ART train' samsung_active_sessions
 run 'Samsung child topology remains mandatory' samsung_broken_child
+run 'wrapped child IDs select only the ART parent' wrapped_child_sessions
+run 'wrapped child IDs support legacy state fields' wrapped_child_legacy
+run 'missing child separator blocks mutations' wrapped_child_no_comma
+run 'invalid child continuation blocks mutations' wrapped_child_bad_token
+run 'unclosed child list blocks mutations' wrapped_child_unclosed
+run 'wrapped child topology remains mandatory' wrapped_child_wrong_parent
+run 'duplicate child ID blocks mutations' wrapped_child_duplicate
+run 'truncated child list blocks mutations' wrapped_child_truncated
+run 'child list cannot continue into the next session' wrapped_child_boundary
 run 'orphaned sessions block mutations' orphaned_sessions
 run 'stdout timeout blocks mutations' stdout_timeout
 run 'dumpsys timeout is explicitly bounded' dump_timeout_arguments
