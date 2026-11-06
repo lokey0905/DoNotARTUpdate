@@ -1,7 +1,7 @@
 id=DoNotARTUpdate
 name=Do Not ART Update
-version=v2.2.0
-versionCode=222
+version=v2.2.1
+versionCode=223
 author=lokey0905
 updateJson=https://raw.githubusercontent.com/lokey0905/donnotARTUpdate/main/update.json
 description=[等待檢查] 等待確認 ART 狀態；本次開機成功取消 0 次；最後成功取消：尚無

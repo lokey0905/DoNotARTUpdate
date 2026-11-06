@@ -4,7 +4,7 @@ SKIPUNZIP=0
 . "$MODPATH/lib/art-guard.sh"
 guard_init "$MODPATH"
 
-ui_print '- Do Not ART Update v2.2.0'
+ui_print '- Do Not ART Update v2.2.1'
 ui_print '- 預設取消 ART 更新交易，並在檢查通過後嘗試解除已套用更新。'
 ui_print '- 取消父交易也會取消同批其他 Mainline 更新；不自動重開機。'
 

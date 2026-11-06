@@ -4,6 +4,7 @@ Magisk / KernelSU / APatch 模組，目標是降低 ART Mainline 更新造成 LS
 
 > [!CAUTION]
 > `v2.2.0` 已在 Samsung A55 / Android 14 驗證待更新攔截、重開機自啟動、一般 Action 顯示，以及 ART 372042720 經系統解除後回復原廠 341411300；Note20 / Android 13 已驗證大型多套件交易解析與 ART 待更新攔截。
+> `v2.2.1` 加入 NOTHING Android 16 交易解析修正及啟動查詢重試提示。解析修正已在 NOTHING A142 實測；啟動重試通過隔離測試，尚未完成新版裝置開機驗證。
 > 手動刪檔備援及其他 ROM 的相容性仍未完成全面實機驗證。
 > 預設會取消包含 ART 的更新交易，並在檢查通過後嘗試解除已套用的 ART 更新。
 > 取消父交易也會取消同批其他 Mainline 更新，包含安全修補；還原 ART 不保證修復所有 hook 問題，也可能造成 bootloop。
@@ -147,7 +148,7 @@ bash tests/test-guard.sh
 
 ## 線上更新與版本
 
-目前正式版為 `v2.2.0` / `versionCode=222`，高於 2.1.2 與 2.2.0 測試版。
+目前正式版為 `v2.2.1` / `versionCode=223`，高於 2.2.0 正式版與先前測試版。
 `module.prop` 的 `updateJson` 指向 GitHub `main/update.json`，供 Magisk 等支援此格式的管理器檢查更新。更新設定提供版本、Release ZIP 與變更紀錄連結，不會由模組自行下載安裝。
 正式版 ZIP 發布於 [GitHub Releases](https://github.com/lokey0905/DoNotARTUpdate/releases)，資產名稱為 `DoNotARTUpdate.zip`。
 打包時必須包含 `lib/`；它是所有入口共用的必要程式。
