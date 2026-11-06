@@ -82,6 +82,12 @@ function terminal(id) {
     return applied[id] == "true" || failed[id] == "true" || destroyed[id] == "true"
 }
 function member(list, id) { return index("," list ",", "," id ",") != 0 }
+function unnamed_draft(id,    p) {
+    # A null optional package hint is valid before commit, not proof of non-ART.
+    if (pkg[id] != "null" || committed[id] != "false" || ready[id] != "false") return 0
+    p = parent[id]
+    return p == "-1" || (p in staged && committed[p] == "false" && ready[p] == "false")
+}
 {
     sub(/\r$/, "")
     if ($0 ~ /^\*\*\* SERVICE .* DUMP TIMEOUT/ || $0 ~ /^Permission Denial:/ || $0 ~ /^Can't find service:/) {
@@ -197,7 +203,11 @@ END {
         if (!boolean(multi[id]) || !boolean(committed[id]) || !(parent[id] == "-1" || numeric(parent[id]))) {
             fail("unknown session topology " id); continue
         }
-        if (multi[id] != "true" && (pkg[id] == "" || pkg[id] == "null")) fail("unresolved package " id)
+        if (multi[id] != "true" && (pkg[id] == "" || pkg[id] == "null")) {
+            if (unnamed_draft(id)) drafts++
+            else fail("unresolved package " id)
+        }
+        # Drafts still block applied-ART restore and retain all topology checks.
         busy++
         if (parent[id] != "-1") {
             p = parent[id]
@@ -229,6 +239,7 @@ END {
     if (error != "") { print "ERROR|" error; exit 1 }
     if (!only_sessions) print "ART|" selected "|" versions[a] "|" versions[f] "|" factory[a] "|" paths[a] "|" paths[f]
     print "BUSY|" busy + 0
+    print "DRAFTS|" drafts + 0
     print "APEXSAFE|" ((apex_seen && apex_ids == apex_states && !apex_unsafe) ? "true" : "false")
     for (id in roots) print "PENDING|" id "|" ready[id] "|" committed[id]
 }

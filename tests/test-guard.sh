@@ -139,6 +139,103 @@ unresolved_package() {
   SNAPSHOT="$CASE_DIR/bad"
   expect_fail guard_scan
 }
+draft_setup() {
+  sed "s|/system/apex|$G_FACTORY_ROOTS|g" "$ROOT/tests/fixtures/draft-unnamed-sessions.dumpsys" > "$CASE_DIR/draft"
+  SNAPSHOT="$CASE_DIR/draft"
+}
+draft_sessions() {
+  draft_setup
+  guard_cycle
+  assert_eq "$G_ART_STATE" factory
+  assert_eq "$G_DRAFTS" 2
+  assert_eq "$G_BUSY" 3
+  assert_eq "$G_PENDING" ''
+  [ ! -s "$CASE_DIR/calls" ]
+  grep -q '\[監控中\] ART 使用出廠版本，目前沒有待套用的 ART 更新' "$G_MODULE/module.prop"
+  grep -q '\[準備中\] 2 筆' "$G_STATE/guard.log"
+  G_READONLY=1
+  guard_user_report > "$CASE_DIR/report"
+  grep -q '目前使用出廠版本' "$CASE_DIR/report"
+  expect_fail grep -qE '準備中|待辨識' "$G_MODULE/module.prop" "$CASE_DIR/report"
+  draft_with_pending
+  guard_user_report > "$CASE_DIR/pending-report"
+  grep -q '待套用的 ART 更新：.*100' "$CASE_DIR/pending-report"
+  expect_fail grep -qE '準備中|待辨識' "$CASE_DIR/pending-report"
+}
+draft_standalone() {
+  draft_setup
+  sed -e '/  Active Session 400:/,/    Active Child Session 401:/{ /    Active Child Session 401:/!d; }' \
+    -e '/    Active Child Session 402:/,/^Finalized install sessions:/{ /^Finalized install sessions:/!d; }' \
+    -e 's/mParentSessionId=400/mParentSessionId=-1/' "$CASE_DIR/draft" > "$CASE_DIR/standalone"
+  SNAPSHOT="$CASE_DIR/standalone"
+  guard_scan
+  assert_eq "$G_DRAFTS" 1
+  assert_eq "$G_BUSY" 1
+  assert_eq "$G_PENDING" ''
+}
+draft_with_pending() {
+  draft_setup
+  sed '/^Finalized install sessions:/,$d' "$CASE_DIR/draft" > "$CASE_DIR/mixed"
+  sed '1d' "$CASE_DIR/pending" >> "$CASE_DIR/mixed"
+  SNAPSHOT="$CASE_DIR/mixed"
+  guard_scan
+  assert_eq "$G_DRAFTS" 2
+  assert_eq "$G_BUSY" 5
+  assert_eq "$G_PENDING" ' 100'
+}
+draft_cancel_known_only() {
+  draft_with_pending
+  guard_command() {
+    printf '%s\n' "$*" >> "$CASE_DIR/calls"
+    [ "$*" = 'install-abandon 100' ] || return 1
+    cp "$CASE_DIR/draft" "$CASE_DIR/mixed"
+    echo Success
+  }
+  guard_cycle
+  assert_eq "$(cat "$CASE_DIR/calls")" 'install-abandon 100'
+  assert_eq "$G_DRAFTS" 2
+  assert_eq "$G_BUSY" 3
+  assert_eq "$G_PENDING" ''
+  guard_stats_load
+  assert_eq "$S_COUNT" 1
+}
+draft_blocks_restore() {
+  draft_setup
+  sed '/^Finalized install sessions:/,$d' "$CASE_DIR/draft" > "$CASE_DIR/mixed"
+  sed '1d' "$CASE_DIR/updated" >> "$CASE_DIR/mixed"
+  SNAPSHOT="$CASE_DIR/mixed"
+  guard_scan
+  assert_eq "$G_ART_STATE" updated
+  assert_eq "$G_APEX_SAFE" true
+  assert_eq "$G_DRAFTS" 2
+  expect_fail guard_cycle
+  [ ! -s "$CASE_DIR/calls" ]
+  [ ! -e "$G_STATE/restore.state" ]
+}
+draft_count_resets() {
+  draft_with_pending
+  SNAPSHOT="$CASE_DIR/factory"
+  guard_scan
+  assert_eq "$G_DRAFTS" 0
+  assert_eq "$G_BUSY" 0
+}
+draft_invalid() {
+  draft_with_pending
+  sed "$1" "$CASE_DIR/mixed" > "$CASE_DIR/bad"
+  SNAPSHOT="$CASE_DIR/bad"
+  expect_fail guard_cycle
+  [ ! -s "$CASE_DIR/calls" ]
+}
+draft_missing_package() { draft_invalid '/Active Child Session 401:/,/Active Child Session 402:/{s/appPackageName=null//;}'; }
+draft_empty_package() { draft_invalid '/Active Child Session 401:/,/Active Child Session 402:/{s/appPackageName=null/appPackageName=/;}'; }
+draft_committed() { draft_invalid '/Active Child Session 401:/,/Active Child Session 402:/{s/mCommitted=false/mCommitted=true/;}'; }
+draft_ready() { draft_invalid '/Active Child Session 401:/,/Active Child Session 402:/{s/mSessionReady=false/mSessionReady=true/;}'; }
+draft_parent_committed() { draft_invalid '/Active Session 400:/,/Active Child Session 401:/{s/mCommitted=false/mCommitted=true/;}'; }
+draft_parent_ready() { draft_invalid '/Active Session 400:/,/Active Child Session 401:/{s/mSessionReady=false/mSessionReady=true/;}'; }
+draft_missing_parent() { draft_invalid 's/mParentSessionId=400/mParentSessionId=999/'; }
+draft_bad_link() { draft_invalid 's/mChildSessionIds=\[401, 402\]/mChildSessionIds=[401]/'; }
+draft_unknown_committed() { draft_invalid '/Active Child Session 401:/,/Active Child Session 402:/{s/mCommitted=false//;}'; }
+draft_unknown_ready() { draft_invalid '/Active Child Session 401:/,/Active Child Session 402:/{s/mSessionReady=false//;}'; }
 query_failure() {
   QUERY_FAIL=1
   expect_fail guard_cycle
@@ -858,6 +955,22 @@ run 'missing boolean rejected' missing_flags
 run 'orphan child rejected' missing_parent
 run 'parent child list validated' missing_child_link
 run 'unresolved package rejected' unresolved_package
+run 'unnamed drafts stay busy and logged without user-facing notices' draft_sessions
+run 'standalone unnamed draft remains busy' draft_standalone
+run 'drafts coexist with a recognized pending ART train' draft_with_pending
+run 'only the known ART train is cancelled; drafts remain' draft_cancel_known_only
+run 'unresolved drafts still block applied ART restore' draft_blocks_restore
+run 'draft count resets on each snapshot' draft_count_resets
+run 'missing draft package field blocks all mutations' draft_missing_package
+run 'empty draft package field blocks all mutations' draft_empty_package
+run 'committed unnamed child blocks all mutations' draft_committed
+run 'ready unnamed child blocks all mutations' draft_ready
+run 'committed unnamed parent train blocks all mutations' draft_parent_committed
+run 'ready unnamed parent train blocks all mutations' draft_parent_ready
+run 'draft parent must exist' draft_missing_parent
+run 'draft child list still requires complete topology' draft_bad_link
+run 'draft committed flag must be explicit' draft_unknown_committed
+run 'draft ready flag must be explicit' draft_unknown_ready
 run 'query error never means empty' query_failure
 run 'truncated dump rejected' truncated_dump
 run 'finalized Samsung ART trains are not pending' finalized_sessions

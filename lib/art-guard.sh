@@ -212,6 +212,7 @@ guard_scan() {
   G_ERROR=''
   G_PENDING=''
   G_BUSY=''
+  G_DRAFTS=0
   G_APEX_SAFE=false
   G_ART_STATE=unknown
   G_PACKAGE='' G_ACTIVE_VERSION='' G_FACTORY_VERSION='' G_ACTIVE_PATH='' G_FACTORY_PATH=''
@@ -243,6 +244,7 @@ guard_scan() {
         esac
         ;;
       BUSY) G_BUSY="$one" ;;
+      DRAFTS) G_DRAFTS="$one" ;;
       APEXSAFE) G_APEX_SAFE="$one" ;;
       PENDING) G_PENDING="$G_PENDING $one" ;;
     esac
@@ -267,6 +269,7 @@ guard_report() {
       guard_log "[狀態2] parent=$id ready=false，交易尚未就緒。"
     fi
   done < "$G_WORK/records"
+  [ "${G_DRAFTS:-0}" = 0 ] || guard_log "[準備中] $G_DRAFTS 筆未提交且未就緒的交易待辨識；保留追蹤，暫緩 ART 解除。"
 }
 
 guard_cancel_pending() {
